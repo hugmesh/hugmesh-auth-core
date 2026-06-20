@@ -5,6 +5,8 @@ import org.springframework.data.r2dbc.repository.Query;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import reactor.core.publisher.Mono;
 
+import java.time.LocalDateTime;
+
 /**
  * Reactive (R2DBC) Spring Data store for {@code bff_session} (changeset 006 + 150 MFA
  * columns). PK is the opaque {@code token}. The {@link AccountStore} facade composes
@@ -36,4 +38,26 @@ public interface BffSessionRepository extends ReactiveCrudRepository<BffSession,
     @Modifying
     @Query(CLEAR_MFA)
     Mono<Long> clearMfaSatisfied(String token);
+
+    /** Partial UPDATE: stamp the encrypted OIDC token custody onto a session by token
+     *  (band-180 columns). A partial UPDATE so the MFA / lifecycle columns are untouched. */
+    String STAMP_CUSTODY =
+            "UPDATE bff_session SET access_token_enc = :accessEnc, refresh_token_enc = :refreshEnc, "
+            + "access_token_expires_at = :accessExpiresAt, custody_updated_at = now() WHERE token = :token";
+
+    /** Partial UPDATE: clear the custody columns on a session by token (logout / refresh). */
+    String CLEAR_CUSTODY =
+            "UPDATE bff_session SET access_token_enc = NULL, refresh_token_enc = NULL, "
+            + "access_token_expires_at = NULL, custody_updated_at = now() WHERE token = :token";
+
+    /** Stamp the encrypted OIDC tokens + their access-token expiry onto a session by token.
+     *  Returns rows updated (0 = unknown token). Does NOT touch the MFA / lifecycle columns. */
+    @Modifying
+    @Query(STAMP_CUSTODY)
+    Mono<Long> stampCustody(String token, String accessEnc, String refreshEnc, LocalDateTime accessExpiresAt);
+
+    /** Clear the custody columns on a session by token. Returns rows updated (0 = unknown token). */
+    @Modifying
+    @Query(CLEAR_CUSTODY)
+    Mono<Long> clearCustody(String token);
 }

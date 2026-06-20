@@ -250,6 +250,45 @@ public class AccountStore {
         return sessions.clearMfaSatisfied(token);
     }
 
+    /**
+     * Stamp the encrypted OIDC tokens + access-token expiry onto an opaque session — the
+     * band-180 custody write the dark exchange/refresh endpoints perform. The {@code *Enc}
+     * values are {@link systems.snapdragon.authcore.casdoor.BffCustodyCipher}-encrypted
+     * blobs, never plaintext. Returns the rows updated (0 = unknown / non-bff token).
+     */
+    public Mono<Long> stampCustody(String token, String accessEnc, String refreshEnc, LocalDateTime accessExpiresAt) {
+        if (token == null || !token.startsWith("bff_")) return Mono.just(0L);
+        return sessions.stampCustody(token, accessEnc, refreshEnc, accessExpiresAt);
+    }
+
+    /**
+     * Clear the custody columns on an opaque session — the dark logout / pre-refresh primitive.
+     * Idempotent. Returns the rows updated (0 = unknown / non-bff token).
+     */
+    public Mono<Long> clearCustody(String token) {
+        if (token == null || !token.startsWith("bff_")) return Mono.just(0L);
+        return sessions.clearCustody(token);
+    }
+
+    /**
+     * Resolve the FULL session row (including the encrypted custody columns) from a RAW opaque
+     * session token — the read the dark exchange endpoint needs. Reuses the same lazy-reap as
+     * {@link #sessionOfToken(String)}: a non-{@code bff_} token, an unknown token, or an expired
+     * row all resolve to empty (expired rows are lazily reaped).
+     */
+    public Mono<BffSession> sessionRow(String token) {
+        if (token == null || !token.startsWith("bff_")) return Mono.empty();
+        return sessions.findById(token)
+                .flatMap(s -> {
+                    LocalDateTime exp = s.expiresAt();
+                    if (exp != null && exp.isBefore(LocalDateTime.now())) {
+                        // Lazily reap the expired row, then resolve to empty.
+                        return sessions.deleteById(token).then(Mono.empty());
+                    }
+                    return Mono.just(s);
+                });
+    }
+
     /** The MFA-satisfaction snapshot of an opaque session (the A5 freshness leg input). */
     public record MfaState(boolean satisfied, LocalDateTime satisfiedAt) {
     }
