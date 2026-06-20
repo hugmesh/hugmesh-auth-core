@@ -300,9 +300,13 @@ public class AccountStore {
         return new Account(row.id(), row.provider(), row.handle(), row.registrationComplete(), roles);
     }
 
-    static final int SESSION_TOKEN_BYTES = 32;
+    /** Session-token entropy width in bytes (>=32 = 256-bit CSPRNG). Public so consumers/tests
+     *  can reason about the encoded token length without hardcoding it. */
+    public static final int SESSION_TOKEN_BYTES = 32;
 
-    static String randomToken() {
+    /** Generate a URL-safe, unpadded base64 CSPRNG token of {@link #SESSION_TOKEN_BYTES} bytes.
+     *  Public utility on the shared auth core (also the body of the opaque {@code bff_} session id). */
+    public static String randomToken() {
         byte[] b = new byte[SESSION_TOKEN_BYTES];
         RNG.nextBytes(b);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(b);

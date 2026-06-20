@@ -170,7 +170,9 @@ public class TotpService {
         return sb.toString();
     }
 
-    static byte[] base32Decode(String s) {
+    /** Decode an RFC 4648 base32 secret to bytes. Public: a pure stateless TOTP utility reused
+     *  by callers/tests that need to compute codes for a known shared secret. */
+    public static byte[] base32Decode(String s) {
         String in = s.trim().replace("=", "").replace(" ", "").toUpperCase();
         int buffer = 0, bits = 0, idx = 0;
         byte[] out = new byte[in.length() * 5 / 8];
