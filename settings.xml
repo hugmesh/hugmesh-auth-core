@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Maven settings used by GitLab CI to authenticate to the project's Maven Package
+  Registry. CI_JOB_TOKEN is injected by GitLab at job runtime (read-only, expires at
+  end of job) — NO secret is committed here. Consumed by `./mvnw deploy -s settings.xml`.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <servers>
+    <server>
+      <id>gitlab-maven</id>
+      <configuration>
+        <httpHeaders>
+          <property>
+            <name>Job-Token</name>
+            <value>${env.CI_JOB_TOKEN}</value>
+          </property>
+        </httpHeaders>
+      </configuration>
+    </server>
+  </servers>
+  <profiles>
+    <profile>
+      <id>gitlab-maven</id>
+      <repositories>
+        <repository>
+          <id>gitlab-maven</id>
+          <url>${env.CI_API_V4_URL}/projects/${env.CI_PROJECT_ID}/packages/maven</url>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>gitlab-maven</activeProfile>
+  </activeProfiles>
+</settings>
