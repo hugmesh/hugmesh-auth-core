@@ -37,6 +37,18 @@
     <dependency><groupId>org.bouncycastle</groupId><artifactId>bcpkix-jdk18on</artifactId><version>1.80</version></dependency>
     <dependency><groupId>org.bouncycastle</groupId><artifactId>bcprov-jdk18on</artifactId><version>1.80</version></dependency>
     <dependency><groupId>com.webauthn4j</groupId><artifactId>webauthn4j-core</artifactId><version>0.28.5.RELEASE</version></dependency>
+
+    <!-- test: JUnit5/AssertJ/Mockito (starter-test) + reactor StepVerifier -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.projectreactor</groupId>
+      <artifactId>reactor-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

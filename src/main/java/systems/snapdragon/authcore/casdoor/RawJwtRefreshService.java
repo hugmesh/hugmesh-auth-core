@@ -2,6 +2,7 @@ package systems.snapdragon.authcore.casdoor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -38,27 +39,47 @@ public class RawJwtRefreshService {
     private static final Logger log = LoggerFactory.getLogger(RawJwtRefreshService.class);
 
     /**
-     * Force a fresh raw-JWT mint for {@code subject} if a {@code refreshToken} is held,
-     * else apply the documented natural-lifetime fallback (no-op). Best-effort: never
-     * fails the challenge.
+     * The OIDC token client used to perform the {@code grant_type=refresh_token} leg. Null when
+     * {@code app.bff.oidc.enabled=false} (the bean is absent) — the service then takes the
+     * documented natural-lifetime fallback. Injected {@link Nullable} so a non-OIDC deployment
+     * boots identically to today.
+     */
+    @Nullable
+    private final OidcExchangeClient oidcExchange;
+
+    public RawJwtRefreshService(@Nullable OidcExchangeClient oidcExchange) {
+        this.oidcExchange = oidcExchange;
+    }
+
+    /**
+     * Force a fresh raw-JWT mint for {@code subject} if a {@code refreshToken} is held AND OIDC
+     * custody is enabled, else apply the documented natural-lifetime fallback (no-op).
+     * Best-effort: NEVER fails the challenge (a refresh error resolves empty — the authoritative
+     * {@code bff_session.mfa_satisfied} stamp already landed and is the source of truth).
      *
      * @param subject      the Casdoor subject whose token should refresh
      * @param refreshToken the held refresh_token, or {@code null}/blank when none is custody-held
      */
     public Mono<Void> forceRefresh(String subject, String refreshToken) {
-        if (refreshToken == null || refreshToken.isBlank()) {
-            // Natural-lifetime fallback: the BFF holds no refresh_token for this opaque-session
-            // caller. The authoritative bff_session stamp already landed; the raw-JWT claim
-            // appears on the next natural mint/refresh (bounded by the lowered privileged-app
-            // expiry, GEN2).
-            log.debug("[mfa-refresh] no held refresh_token for subject -> natural-lifetime fallback "
-                    + "(authoritative session stamp is immediate)");
+        if (refreshToken == null || refreshToken.isBlank() || oidcExchange == null) {
+            // Natural-lifetime fallback: no held refresh_token (opaque-session caller) or OIDC
+            // custody disabled. The authoritative bff_session stamp already landed; the raw-JWT
+            // claim appears on the next natural mint/refresh (bounded by the lowered
+            // privileged-app expiry, GEN2).
+            log.debug("[mfa-refresh] natural-lifetime fallback "
+                    + "(no held refresh_token or OIDC custody off; authoritative session stamp is immediate)");
             return Mono.empty();
         }
-        // Held-refresh_token path (future custody wiring): exchange refreshToken for a fresh
-        // access token so the gateway sees mfa_satisfied_at immediately. Intentionally a
-        // best-effort no-op stub until refresh_token custody lands; documented above.
-        log.debug("[mfa-refresh] held refresh_token present -> force-refresh path (custody wiring pending)");
-        return Mono.empty();
+        // Held-refresh_token path: exchange refreshToken for a fresh access token so the gateway
+        // sees mfa_satisfied_at within the freshness window. Best-effort — the caller (the BFF
+        // session-exchange endpoint) is responsible for re-stamping custody with the returned
+        // tokens; here we only force the mint and swallow any error.
+        return oidcExchange.refresh(refreshToken)
+                .doOnNext(t -> log.debug("[mfa-refresh] held refresh_token exchanged -> fresh access token minted"))
+                .onErrorResume(e -> {
+                    log.debug("[mfa-refresh] refresh leg failed (fail-open, best-effort): {}", e.toString());
+                    return Mono.empty();
+                })
+                .then();
     }
 }
