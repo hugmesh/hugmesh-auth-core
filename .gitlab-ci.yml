@@ -1,0 +1,43 @@
+# snapdragon-auth-core — compile, test, and publish the shared auth-core library jar to the
+# GitLab Maven Package Registry.
+#
+# Resolves its parent (snapdragon-parent) and snapdragon-commons from the same registry. On the
+# default branch / on a tag the jar is deployed so the BFF child poms (user-bff, admin-bff) can
+# consume snapdragon-auth-core:2.0.0. Tests are pure-unit (no testcontainers), so `verify` needs
+# no Docker service.
+
+stages:
+  - build
+  - deploy
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  MAVEN_CLI_OPTS: "-B -ntp -s settings.xml"
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .m2/repository
+
+build:test:
+  stage: build
+  image: eclipse-temurin:21-jdk
+  script:
+    - ./mvnw $MAVEN_CLI_OPTS verify
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+    paths:
+      - target/*.jar
+    expire_in: 1 week
+
+deploy:maven:
+  stage: deploy
+  image: eclipse-temurin:21-jdk
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+  script:
+    # CI_JOB_TOKEN (read-only, job-scoped) is read from settings.xml's Job-Token header.
+    - ./mvnw $MAVEN_CLI_OPTS deploy -DskipTests
