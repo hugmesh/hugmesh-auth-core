@@ -16,6 +16,13 @@ import java.time.Instant;
  * + unexpired predicate makes a replay / concurrent double-verify lose -> 0 rows), then the
  * caller re-reads the just-flipped row to recover the challenge. Owner + ceremony scoped so a
  * subject can never consume another subject's challenge. No raw {@code DatabaseClient}.
+ *
+ * <p>DB-GENERATED UUID PK (release 2.3.0): the {@code id} is NO LONGER minted in Java. The
+ * production {@code webauthn_challenge.id} column carries a
+ * {@code DEFAULT (gen_random_uuid())::text} (admin-bff changeset 152), so the
+ * {@code .../options} INSERT OMITS {@code id} and appends {@code RETURNING id} (a plain,
+ * NON-{@code @Modifying} {@code @Query} returning {@code Mono<String>}). The supersede-prune,
+ * the unexpired-pending read and the atomic single-use consume are unchanged.
  */
 public interface WebAuthnChallengeR2dbcRepository
         extends ReactiveCrudRepository<WebAuthnChallengeRow, String> {
@@ -24,6 +31,21 @@ public interface WebAuthnChallengeR2dbcRepository
      *  the head of this to recover the challenge consumed by {@link #consume}. */
     Flux<WebAuthnChallengeRow> findByOwnerSubjectAndCeremonyTypeAndUsedFalseOrderByCreatedAtDesc(
             String ownerSubject, String ceremonyType);
+
+    /** Insert a fresh PENDING challenge with a DB-generated id (called by {@code put} AFTER the
+     *  supersede-prune). The {@code id} is OMITTED so Postgres fills it from the
+     *  {@code (gen_random_uuid())::text} column DEFAULT; {@code RETURNING id} reads it back. A
+     *  plain (non-{@code @Modifying}) {@code @Query} returning the new id; a fresh challenge
+     *  always inserts {@code used=false}. */
+    String INSERT_CHALLENGE_RETURNING_ID =
+            "INSERT INTO webauthn_challenge "
+            + "(owner_subject, challenge, ceremony_type, expires_at, used, created_at) "
+            + "VALUES (:ownerSubject, :challenge, :ceremonyType, :expiresAt, :used, :createdAt) "
+            + "RETURNING id";
+
+    @Query(INSERT_CHALLENGE_RETURNING_ID)
+    Mono<String> insertReturningId(String ownerSubject, String challenge, String ceremonyType,
+                                   Instant expiresAt, boolean used, Instant createdAt);
 
     /** Atomic one-time consume of ONE exact challenge row. Flip {@code used} false->true keyed
      *  on (id, owner, ceremony) for an UNEXPIRED pending row. The {@code used = false} +

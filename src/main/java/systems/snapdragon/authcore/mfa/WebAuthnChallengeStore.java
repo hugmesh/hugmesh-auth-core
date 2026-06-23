@@ -5,7 +5,6 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.UUID;
 
 /**
  * Short-TTL DURABLE store for the PENDING WebAuthn challenge, bound to the caller's exact
@@ -52,14 +51,14 @@ public class WebAuthnChallengeStore {
             return Mono.empty();
         }
         Instant now = Instant.now();
-        WebAuthnChallengeRow row = new WebAuthnChallengeRow(
-                UUID.randomUUID().toString(), ownerSubject, challengeB64Url, purpose,
-                now.plus(TTL), false, now, true);
         // Supersede any prior challenge for this (owner, ceremony) — a re-issue replaces it,
         // mirroring the old single-slot map, and stale used/expired rows never accumulate —
-        // then insert the fresh pending challenge.
+        // then insert the fresh PENDING challenge with a DB-generated id (gen_random_uuid()
+        // DEFAULT via RETURNING id; the returned id is not surfaced — same ~5m TTL, same
+        // single-use, same owner+ceremony scoping as before).
         return challenges.pruneOwnerCeremony(ownerSubject, purpose)
-                .then(challenges.save(row))
+                .then(challenges.insertReturningId(ownerSubject, challengeB64Url, purpose,
+                        now.plus(TTL), false, now))
                 .then();
     }
 

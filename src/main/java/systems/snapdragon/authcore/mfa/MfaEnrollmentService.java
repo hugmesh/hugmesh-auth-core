@@ -10,7 +10,6 @@ import systems.snapdragon.commons.web.ApiException;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * The BFF-OWNED MFA factor lifecycle (enroll / list / remove / recovery), the D6+D8 web
@@ -77,11 +76,12 @@ public class MfaEnrollmentService {
         }
         String secret = totp.newSecret();
         String enc = cipher.encrypt(secret);
-        String id = UUID.randomUUID().toString();
-        MfaFactorRow row = new MfaFactorRow(id, ownerSubject, MfaFactorRow.TYPE_TOTP, enc,
-                null, false, Instant.now(), true);
         String otpauth = totp.otpauthUri(accountName, secret);
-        return factors.save(row).thenReturn(new TotpEnrollResult(id, otpauth, secret));
+        // Insert a DISABLED TOTP factor (encrypted secret, null counter) and let Postgres mint
+        // the id (gen_random_uuid() DEFAULT); RETURNING id gives us the factor id for the result.
+        return factors.insertReturningId(ownerSubject, MfaFactorRow.TYPE_TOTP, enc,
+                        null, false, Instant.now())
+                .map(id -> new TotpEnrollResult(id, otpauth, secret));
     }
 
     /**
@@ -127,12 +127,13 @@ public class MfaEnrollmentService {
 
     private Mono<List<String>> regenerateRecoveryCodesInternal(String ownerSubject) {
         List<String> codes = recovery.generateCodes();
+        // Invalidate the prior set, then insert each fresh code (only its salted hash, never the
+        // plaintext) with a DB-generated id (gen_random_uuid() DEFAULT via RETURNING id). The
+        // concatMap preserves the prior saveAll's behavior: delete-then-insert the whole set.
         return recoveryCodes.deleteByOwner(ownerSubject)
                 .thenMany(Flux.fromIterable(codes)
-                        .map(code -> new MfaRecoveryCodeRow(UUID.randomUUID().toString(),
-                                ownerSubject, recovery.hash(code), false, Instant.now(), true)))
-                .collectList()
-                .flatMapMany(recoveryCodes::saveAll)
+                        .concatMap(code -> recoveryCodes.insertReturningId(
+                                ownerSubject, recovery.hash(code), false, Instant.now())))
                 .then(Mono.just(codes));
     }
 
@@ -167,17 +168,15 @@ public class MfaEnrollmentService {
 
     private Mono<String> storeWebAuthnCredential(String ownerSubject,
                                                  WebAuthnService.RegisteredCredential cred) {
-        String credRowId = UUID.randomUUID().toString();
-        WebAuthnCredentialRow credRow = new WebAuthnCredentialRow(credRowId, ownerSubject,
-                cred.credentialIdBase64Url(), cred.attestationCborBase64(), cred.signCount(),
-                cred.transports(), true, Instant.now(), true);
-        // Mirror an enabled WEBAUTHN factor row so the unified factor list + verifier see it.
-        String factorId = UUID.randomUUID().toString();
-        MfaFactorRow factorRow = new MfaFactorRow(factorId, ownerSubject,
-                MfaFactorRow.TYPE_WEBAUTHN, null, null, true, Instant.now(), true);
-        return webauthnCredentials.save(credRow)
-                .then(factors.save(factorRow))
-                .thenReturn(factorId);
+        Instant now = Instant.now();
+        // Insert the credential (DB-generated id; its id is not surfaced) ...
+        return webauthnCredentials.insertReturningId(ownerSubject,
+                        cred.credentialIdBase64Url(), cred.attestationCborBase64(),
+                        cred.signCount(), cred.transports(), true, now)
+                // ... then mirror an ENABLED WEBAUTHN factor row so the unified factor list +
+                // verifier see it, and return the DB-generated factor id (unchanged contract).
+                .then(factors.insertReturningId(ownerSubject, MfaFactorRow.TYPE_WEBAUTHN,
+                        null, null, true, now));
     }
 
     /** Issue an ASSERTION challenge (challenge-time), bound to the caller's SUBJECT (stored

@@ -11,6 +11,13 @@ import reactor.core.publisher.Mono;
  * Registration INSERTs (after dup check); assertion verify loads the caller's creds and,
  * on success, advances {@code sign_count} MONOTONICALLY (clone detection at the SQL
  * predicate). Owner-scoped delete is the step-up-gated remove. No raw {@code DatabaseClient}.
+ *
+ * <p>DB-GENERATED UUID PK (release 2.3.0): the {@code id} is NO LONGER minted in Java. The
+ * production {@code webauthn_credential.id} column carries a
+ * {@code DEFAULT (gen_random_uuid())::text} (admin-bff changeset 151), so the registration
+ * INSERT OMITS {@code id} and appends {@code RETURNING id} (a plain, NON-{@code @Modifying}
+ * {@code @Query} returning {@code Mono<String>}). The dup-credentialId check, the monotonic
+ * sign-count advance and the owner-scoped delete are unchanged.
  */
 public interface WebAuthnCredentialR2dbcRepository
         extends ReactiveCrudRepository<WebAuthnCredentialRow, String> {
@@ -21,6 +28,24 @@ public interface WebAuthnCredentialR2dbcRepository
     /** Global lookup by credentialId (the dup-registration check + the assertion verify
      *  identifies the presented credential). credentialId is UNIQUE, so at most one. */
     Mono<WebAuthnCredentialRow> findByCredentialId(String credentialId);
+
+    /** Insert a registered credential with a DB-generated id (called only AFTER the dup
+     *  check). The {@code id} is OMITTED so Postgres fills it from the
+     *  {@code (gen_random_uuid())::text} column DEFAULT; {@code RETURNING id} reads it back. A
+     *  plain (non-{@code @Modifying}) {@code @Query} returning the new id; a fresh registration
+     *  always inserts {@code enabled=true}. */
+    String INSERT_CREDENTIAL_RETURNING_ID =
+            "INSERT INTO webauthn_credential "
+            + "(owner_subject, credential_id, public_key_cose, sign_count, transports, enabled, "
+            + "created_at) "
+            + "VALUES (:ownerSubject, :credentialId, :publicKeyCose, :signCount, :transports, "
+            + ":enabled, :createdAt) "
+            + "RETURNING id";
+
+    @Query(INSERT_CREDENTIAL_RETURNING_ID)
+    Mono<String> insertReturningId(String ownerSubject, String credentialId, String publicKeyCose,
+                                   long signCount, String transports, boolean enabled,
+                                   java.time.Instant createdAt);
 
     /** Advance the sign count MONOTONICALLY after a verified assertion — keyed on (id, owner)
      *  with a {@code sign_count < :newCount} guard so a stale/cloned counter (<=) updates 0
