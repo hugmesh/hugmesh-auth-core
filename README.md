@@ -41,17 +41,22 @@ stores and Casdoor-admin client that user-bff (login/session custody) and admin-
 **relocated from admin-bff to user-bff**; the reusable pieces land here so both BFFs share
 one implementation while the account/session **data** continues to live in admin-bff-db.
 
-## Status (incremental extraction)
-- ✅ `account/` — Account, AccountRow(+repo), AccountStore, Allowlist(+repo),
+## Status (extraction landed)
+- ✅ `account/` — Account, AccountRow(+repo), AccountStatus, AccountStore, Allowlist(+repo),
   BffSession(+repo), NamespaceGrant(+repo). Self-contained; builds against commons + r2dbc.
-- ⏳ next: `casdoor/`, `mfa/`, `config/` (session-cookie + internal-token filters),
-  `provision/`, `suspension/`, `profile/`, `reserved/`, `web/dto/` — per the extraction
-  blueprint. admin-bff + user-bff then adopt this jar.
+- ✅ `casdoor/` — Casdoor-admin client/config, OIDC token-exchange client (`OidcExchangeClient`),
+  BFF-custody cipher (`BffCustodyCipher`), MFA challenge/step-up services, raw-JWT refresh.
+- ✅ `mfa/` — TOTP, WebAuthn (webauthn4j), recovery codes, enrollment, secret cipher, and the
+  R2DBC factor/credential/challenge rows + repositories.
+- ✅ `config/` — session-cookie + internal-token web filters and the internal-surface boot guard.
+- ✅ `provision/` (gateway revocation client), `reserved/` (reserved-name gate),
+  `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
+- All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
 Build: `./mvnw -o clean package` (resolves snapdragon-parent + snapdragon-commons 2.0.0 from `~/.m2`).
 
 ## Current State
-- **Version 2.0.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.2 /
+- **Version 2.1.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.2 /
   Spring Cloud 2025.1 / Java 21**, inherited via `snapdragon-parent` (metapom) **2.0.0**.
 - Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy). **No cycle** —
   commons does not depend on this core.
@@ -60,10 +65,19 @@ Build: `./mvnw -o clean package` (resolves snapdragon-parent + snapdragon-common
 - Reactive throughout: **Spring Data R2DBC** repositories (no raw SQL strings / inline
   `@Query`), matching the org data-access standard. Crypto via BouncyCastle
   (AES-256-GCM); MFA via webauthn4j (WebAuthn) + TOTP.
-- **Extraction in progress**: the `account/` package is landed and self-contained; the
-  remaining packages (`casdoor/`, `mfa/`, `config/`, `provision/`, `suspension/`,
-  `profile/`, `reserved/`, `web/dto/`) are still being extracted from admin-bff as login
-  relocates to user-bff.
+- **BFF JWT custody (2.1.0)**: `BffSession` carries the OIDC-token-custody columns
+  (`access_token_enc` / `refresh_token_enc` / `access_token_expires_at` /
+  `custody_updated_at`, admin-bff band-180; alongside the changeset-150 MFA columns
+  `mfa_satisfied` / `mfa_satisfied_at` / `amr`). These are **NULLABLE and never written at
+  session mint** — `AccountStore.newSession` leaves them null, so a pre-band-180 (2.0.0)
+  consumer reads them as null. The custody passthrough lands as `AccountStore.stampCustody`
+  / `clearCustody` (delegating to `BffSessionRepository`) plus `AccountStore.sessionRow`,
+  which the dark custody endpoints use to stamp/clear/read per-session encrypted tokens for
+  the opaque `bff_`-session custody model.
+- **Extraction landed**: all packages from the blueprint — `account/`, `casdoor/`, `mfa/`,
+  `config/` (session-cookie + internal-token filters + boot guard), `provision/`,
+  `reserved/`, `username/`, `web/dto/` — have been extracted from admin-bff; admin-bff +
+  user-bff adopt this jar as login relocates to user-bff.
 - **No `spring.cloud.gateway.*` route config lives here** — this is a library, not a
   gateway; the SCG-5 route-namespace move
   (`spring.cloud.gateway.routes` → `spring.cloud.gateway.server.webflux.routes`) is a
@@ -73,10 +87,9 @@ Build: `./mvnw -o clean package` (resolves snapdragon-parent + snapdragon-common
 
 ## Roadmap
 This jar advances in lockstep with the platform auth roadmap; the next increments are:
-- **Finish the extraction**: move `casdoor/`, `mfa/`, `config/` (session-cookie +
-  internal-token filters), `provision/`, `suspension/`, `profile/`, `reserved/`,
-  `web/dto/` here, then have admin-bff + user-bff adopt the jar (login/session logic fully
-  relocated admin-bff → user-bff).
+- **Adopt the jar across BFFs**: with the extraction landed, complete admin-bff + user-bff
+  adoption so login/session logic is fully relocated admin-bff → user-bff against this one
+  shared implementation.
 - **SSO end-to-end + e2e**: support the live Casdoor OIDC (PKCE) → opaque `bff_` session
   flow and the gateway exchange-filter path, with end-to-end tests.
 - **MFA**: WebAuthn + TOTP + recovery, per-role defaults and step-up — the shared MFA
@@ -85,5 +98,6 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   superadmin, device-license registry, desktop app governance (SSO sudo), and OWASP
   pen-test + nuclei in CI.
 
-_Grounded in the Snapdragon-Systems current-state brief (2026-06-20). Features beyond the
-brief and the prior README are intentionally not invented here._
+_Grounded in the Snapdragon-Systems current-state brief and the repo's landed code at
+auth-core 2.1.0 (2026-06-22). Features beyond the brief and the actual code are
+intentionally not invented here._
