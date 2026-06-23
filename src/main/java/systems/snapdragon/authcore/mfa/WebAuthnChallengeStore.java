@@ -28,10 +28,12 @@ import java.util.UUID;
 @Component
 public class WebAuthnChallengeStore {
 
-    /** Registration ceremony purpose key (stored as {@code ceremony_type}). */
-    public static final String PURPOSE_REGISTER = "register";
-    /** Assertion ceremony purpose key (stored as {@code ceremony_type}). */
-    public static final String PURPOSE_ASSERT = "assert";
+    /** Registration ceremony purpose key (stored as {@code ceremony_type}). Byte-identical to
+     *  {@link CeremonyType#REGISTER}'s wire token; delegates to the enum (single source of truth). */
+    public static final String PURPOSE_REGISTER = CeremonyType.REGISTER.value();
+    /** Assertion ceremony purpose key (stored as {@code ceremony_type}). Byte-identical to
+     *  {@link CeremonyType#ASSERT}'s wire token; delegates to the enum (single source of truth). */
+    public static final String PURPOSE_ASSERT = CeremonyType.ASSERT.value();
 
     private static final Duration TTL = Duration.ofMinutes(5);
 

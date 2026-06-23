@@ -34,10 +34,12 @@ public record MfaFactorRow(
         @Column("created_at") Instant createdAt,
         @Transient boolean isNew) implements Persistable<String> {
 
-    /** TOTP factor type discriminator. */
-    public static final String TYPE_TOTP = "TOTP";
-    /** WebAuthn factor type discriminator. */
-    public static final String TYPE_WEBAUTHN = "WEBAUTHN";
+    /** TOTP factor type discriminator. Byte-identical to {@link FactorType#TOTP}'s wire token;
+     *  delegates to the enum so the closed set has a single source of truth. */
+    public static final String TYPE_TOTP = FactorType.TOTP.value();
+    /** WebAuthn factor type discriminator. Byte-identical to {@link FactorType#WEBAUTHN}'s wire
+     *  token; delegates to the enum so the closed set has a single source of truth. */
+    public static final String TYPE_WEBAUTHN = FactorType.WEBAUTHN.value();
 
     @PersistenceCreator
     public MfaFactorRow(String id, String ownerSubject, String type, String totpSecretEnc,

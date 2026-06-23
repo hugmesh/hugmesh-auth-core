@@ -43,6 +43,9 @@ public class InternalSurfaceBootGuard implements SmartInitializingSingleton {
 
     @Override
     public void afterSingletonsInstantiated() {
+        // server.ssl.client-auth is the Spring closed set {none, want, need}; ONLY 'need'
+        // (mTLS REQUIRED, client cert mandatory) protects the permitAll() internal surface —
+        // 'want' (optional cert) and 'none' (no cert) both leave it open, so they fail the guard.
         if (!sslEnabled || !"need".equals(clientAuth)) {
             throw new IllegalStateException(
                     "REFUSING TO BOOT: the privilege-bearing /bff/internal/** surface is "
