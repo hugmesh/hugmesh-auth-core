@@ -3,6 +3,7 @@ package systems.snapdragon.authcore.account;
 import org.springframework.data.r2dbc.repository.Modifying;
 import org.springframework.data.r2dbc.repository.Query;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.LocalDateTime;
@@ -60,4 +61,24 @@ public interface BffSessionRepository extends ReactiveCrudRepository<BffSession,
     @Modifying
     @Query(CLEAR_CUSTODY)
     Mono<Long> clearCustody(String token);
+
+    /**
+     * List ALL session rows for one account (the "my active sessions" read). Derived query
+     * on the indexed {@code account_id} FK column — Spring Data R2DBC emits
+     * {@code WHERE account_id = $1}, ordered newest-first for a stable UI listing. Includes
+     * EXPIRED rows; callers wanting only live sessions use
+     * {@link #findByAccountIdAndExpiresAtAfter(String, LocalDateTime)} (or filter the
+     * {@link AccountStore} passthrough). NEVER takes a request-supplied account id — the
+     * account is derived server-side from the validated principal (see {@link AccountStore}).
+     */
+    Flux<BffSession> findByAccountIdOrderByCreatedAtDesc(String accountId);
+
+    /**
+     * List only the NON-EXPIRED session rows for one account — the DB-side equivalent of the
+     * lazy-reap that {@link AccountStore#sessionOfToken(String)} does per-token. Derived query:
+     * {@code WHERE account_id = $1 AND expires_at > $2}, ordered newest-first. Pass
+     * {@code LocalDateTime.now()} as the cutoff so an expired-but-not-yet-reaped row is hidden
+     * from the listing.
+     */
+    Flux<BffSession> findByAccountIdAndExpiresAtAfterOrderByCreatedAtDesc(String accountId, LocalDateTime cutoff);
 }

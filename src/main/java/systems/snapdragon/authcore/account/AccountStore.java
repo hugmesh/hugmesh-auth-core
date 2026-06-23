@@ -242,6 +242,21 @@ public class AccountStore {
     }
 
     /**
+     * List a single account's NON-EXPIRED opaque sessions — the "my active sessions" read the
+     * user-facing session-management UI needs. The {@code accountId} MUST be derived
+     * SERVER-SIDE from the validated principal (e.g. {@link #idFor(String, String)} over the
+     * Casdoor JWT email / preferred_username claim), NEVER from a request parameter — a user
+     * may only ever list THEIR OWN sessions. Filters expired rows at the DB ({@code expires_at
+     * > now()}) so an unreaped stale row never surfaces; rows arrive newest-first. Projects to
+     * {@link BffSessionRow} so callers never touch the entity's custody/MFA internals.
+     */
+    public Flux<BffSessionRow> sessionsForAccount(String accountId) {
+        if (accountId == null || accountId.isBlank()) return Flux.empty();
+        return sessions.findByAccountIdAndExpiresAtAfterOrderByCreatedAtDesc(accountId, LocalDateTime.now())
+                .map(BffSessionRow::of);
+    }
+
+    /**
      * Clear the MFA satisfaction on an opaque session — the single-use consumption the A5
      * step-up leg performs per privileged mutation. Idempotent.
      */
