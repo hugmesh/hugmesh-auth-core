@@ -36,7 +36,7 @@
     <!-- MFA subsystem crypto (TOTP HMAC + WebAuthn) — needed when the mfa/* classes land -->
     <dependency><groupId>org.bouncycastle</groupId><artifactId>bcpkix-jdk18on</artifactId><version>1.80</version></dependency>
     <dependency><groupId>org.bouncycastle</groupId><artifactId>bcprov-jdk18on</artifactId><version>1.80</version></dependency>
-    <dependency><groupId>com.webauthn4j</groupId><artifactId>webauthn4j-core</artifactId><version>0.28.5.RELEASE</version></dependency>
+    <dependency><groupId>com.webauthn4j</groupId><artifactId>webauthn4j-core</artifactId><version>0.31.7.RELEASE</version></dependency>
 
     <!-- test: JUnit5/AssertJ/Mockito (starter-test) + reactor StepVerifier -->
     <dependency>
