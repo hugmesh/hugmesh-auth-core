@@ -53,11 +53,12 @@ one implementation while the account/session **data** continues to live in admin
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves snapdragon-parent + snapdragon-commons 2.0.0 from `~/.m2`).
+Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.4.0 + snapdragon-commons 2.0.0 from `~/.m2`).
 
 ## Current State
-- **Version 2.1.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.2 /
-  Spring Cloud 2025.1 / Java 21**, inherited via `snapdragon-parent` (metapom) **2.0.0**.
+- **Version 2.3.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.2 /
+  Spring Cloud 2025.1 / Java 21**, inherited via `snapdragon-parent` (metapom) **2.4.0**
+  (which runs **PMD + Checkstyle + SpotBugs in FAIL mode**).
 - Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy). **No cycle** —
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
@@ -74,6 +75,26 @@ Build: `./mvnw -o clean package` (resolves snapdragon-parent + snapdragon-common
   / `clearCustody` (delegating to `BffSessionRepository`) plus `AccountStore.sessionRow`,
   which the dark custody endpoints use to stamp/clear/read per-session encrypted tokens for
   the opaque `bff_`-session custody model.
+- **List a user's sessions by account (2.2.0)**: `AccountStore.sessionsForAccount` plus the
+  `BffSessionRepository.findByAccountIdAndExpiresAtAfterOrderByCreatedAtDesc` derived finder
+  back the "my active sessions" read for the session-management UI. The `accountId` MUST be
+  derived **server-side** from the validated principal (never a request parameter — a user
+  may only list THEIR OWN sessions); expired rows are filtered at the DB (`expires_at >
+  now()`), newest-first, and projected to `BffSessionRow` so callers never touch the entity's
+  custody/MFA internals.
+- **DB-generated MFA UUID PKs (2.3.0)**: the `mfa_factor` / `mfa_recovery_code` /
+  `webauthn_credential` / `webauthn_challenge` `id` columns are NO LONGER minted in Java —
+  the production columns carry a `DEFAULT (gen_random_uuid())::text` (admin-bff changeset
+  151/152), so the enroll INSERT OMITS `id` and appends `RETURNING id` to read the
+  database-generated UUID back (a plain non-`@Modifying` `@Query` returning `Mono<String>`).
+  The MFA-repo data-slice tests run on **real Postgres** (commons `PostgresTestSupport` /
+  Testcontainers), since `gen_random_uuid()` and `INSERT ... RETURNING` are Postgres features
+  H2 does not honour.
+- **Code-side-lens MFA enums**: `FactorType` (`TOTP`|`WEBAUTHN`, the `mfa_factor.type`
+  discriminator) and `CeremonyType` (registration|assertion, the
+  `webauthn_challenge.ceremony_type` discriminator) wrap the app-owned closed vocabularies as
+  `@JsonValue`/`@JsonCreator` lenses over the persisted String columns — R2DBC mapping stays
+  byte-identical and the legacy `TYPE_TOTP`/`TYPE_WEBAUTHN` constants delegate to the enum.
 - **Extraction landed**: all packages from the blueprint — `account/`, `casdoor/`, `mfa/`,
   `config/` (session-cookie + internal-token filters + boot guard), `provision/`,
   `reserved/`, `username/`, `web/dto/` — have been extracted from admin-bff; admin-bff +
@@ -99,5 +120,5 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the Snapdragon-Systems current-state brief and the repo's landed code at
-auth-core 2.1.0 (2026-06-22). Features beyond the brief and the actual code are
+auth-core 2.3.0 (2026-06-24). Features beyond the brief and the actual code are
 intentionally not invented here._
