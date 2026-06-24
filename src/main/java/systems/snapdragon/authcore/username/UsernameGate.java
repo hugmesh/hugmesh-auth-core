@@ -93,23 +93,28 @@ public class UsernameGate {
         if (ReservedNames.isReserved(candidate)) {
             return attempt(base, base + (attemptNo + 1), attemptNo + 1);
         }
-        return federation.availability(candidate).flatMap(av -> {
-            if (av.available()) {
-                if (attemptNo > 1) {
-                    log.info("[username-gate] '{}' collided ({}); disambiguated to '{}'",
-                            base, "attempt " + attemptNo, candidate);
-                }
-                return Mono.just(candidate);
+        return federation.availability(candidate)
+                .flatMap(av -> onAvailabilityResult(base, candidate, attemptNo, av));
+    }
+
+    /** Decide the next step given the availability result: accept, reject, or try next variant. */
+    private Mono<String> onAvailabilityResult(String base, String candidate, int attemptNo,
+                                              UsernameAvailability av) {
+        if (av.available()) {
+            if (attemptNo > 1) {
+                log.info("[username-gate] '{}' collided ({}); disambiguated to '{}'",
+                        base, "attempt " + attemptNo, candidate);
             }
-            if (av.isReserved() && candidate.equals(base)) {
-                // The federation flags the original as reserved even though our
-                // local set did not — honour it as a hard reject (never rename).
-                return Mono.error(new UsernameGateException(base, "reserved",
-                        "derived username '" + base + "' is reserved (federation)"));
-            }
-            log.debug("[username-gate] '{}' unavailable ({}); trying next variant",
-                    candidate, av.reason());
-            return attempt(base, base + (attemptNo + 1), attemptNo + 1);
-        });
+            return Mono.just(candidate);
+        }
+        if (av.isReserved() && candidate.equals(base)) {
+            // The federation flags the original as reserved even though our
+            // local set did not — honour it as a hard reject (never rename).
+            return Mono.error(new UsernameGateException(base, "reserved",
+                    "derived username '" + base + "' is reserved (federation)"));
+        }
+        log.debug("[username-gate] '{}' unavailable ({}); trying next variant",
+                candidate, av.reason());
+        return attempt(base, base + (attemptNo + 1), attemptNo + 1);
     }
 }

@@ -96,20 +96,23 @@ public class OidcExchangeClient {
                 .body(BodyInserters.fromFormData(form))
                 .retrieve()
                 .bodyToMono(Map.class)
-                .map(body -> {
-                    Object err = body.get("error");
-                    if (err != null) {
-                        // Never log the form (carries client_secret/code); only the grant + error code.
-                        throw new IllegalStateException("OIDC token endpoint returned error for "
-                                + grant + ": " + err);
-                    }
-                    String access = str(body.get("access_token"));
-                    String refresh = str(body.get("refresh_token"));
-                    String id = str(body.get("id_token"));
-                    long expires = body.get("expires_in") instanceof Number n
-                            ? n.longValue() : defaultExpirySeconds;
-                    return new OidcTokens(access, refresh, id, expires);
-                });
+                .map(body -> parseTokenResponse(body, grant));
+    }
+
+    /** Parse a successful token-endpoint response into {@link OidcTokens}. */
+    private OidcTokens parseTokenResponse(Map<?, ?> body, String grant) {
+        Object err = body.get("error");
+        if (err != null) {
+            // Never log the form (carries client_secret/code); only the grant + error code.
+            throw new IllegalStateException("OIDC token endpoint returned error for "
+                    + grant + ": " + err);
+        }
+        String access = str(body.get("access_token"));
+        String refresh = str(body.get("refresh_token"));
+        String id = str(body.get("id_token"));
+        long expires = body.get("expires_in") instanceof Number n
+                ? n.longValue() : defaultExpirySeconds;
+        return new OidcTokens(access, refresh, id, expires);
     }
 
     private static String str(Object o) {

@@ -318,21 +318,24 @@ public class AccountStore {
     public Mono<List<Map<String, Object>>> allGrants() {
         return grants.findAllByOrderByGranteeAscNamespaceAsc()
                 .collectList()
-                .map(rows -> {
-                    // Group namespaces per grantee, preserving first-seen order.
-                    Map<String, List<String>> byUser = new LinkedHashMap<>();
-                    for (NamespaceGrant r : rows) {
-                        byUser.computeIfAbsent(r.grantee(), k -> new ArrayList<>()).add(r.namespace());
-                    }
-                    List<Map<String, Object>> out = new ArrayList<>();
-                    byUser.forEach((user, ns) -> {
-                        Map<String, Object> row = new LinkedHashMap<>();
-                        row.put("user", user);
-                        row.put("namespaces", ns);
-                        out.add(row);
-                    });
-                    return out;
-                });
+                .map(AccountStore::toGrantList);
+    }
+
+    /** Group a flat list of NamespaceGrant rows into a per-grantee list-of-maps. */
+    private static List<Map<String, Object>> toGrantList(List<NamespaceGrant> rows) {
+        // Group namespaces per grantee, preserving first-seen order.
+        Map<String, List<String>> byUser = new LinkedHashMap<>();
+        for (NamespaceGrant r : rows) {
+            byUser.computeIfAbsent(r.grantee(), k -> new ArrayList<>()).add(r.namespace());
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        byUser.forEach((user, ns) -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("user", user);
+            row.put("namespaces", ns);
+            out.add(row);
+        });
+        return out;
     }
 
     public boolean isValidNamespace(String ns) { return NAMESPACES.contains(ns); }

@@ -88,24 +88,27 @@ public class BffStoredMfaFactorVerifier implements MfaFactorVerifier {
     private Mono<Boolean> verifyTotp(String subject, String code) {
         return factors.findByOwnerSubjectAndType(subject, MfaFactorRow.TYPE_TOTP)
                 .filter(MfaFactorRow::enabled) // only ENABLED factors satisfy
-                .concatMap(row -> {
-                    String secret = cipher.decrypt(row.totpSecretEnc());
-                    if (secret == null) {
-                        return Mono.just(false);
-                    }
-                    long floor = row.lastCounter() == null ? -1L : row.lastCounter();
-                    long step = totp.verify(secret, floor, code);
-                    if (step < 0) {
-                        return Mono.just(false);
-                    }
-                    // Advance the replay floor; the SQL guard (last_counter < step) makes a
-                    // concurrent replay of the same step lose -> 0 rows -> not satisfied.
-                    return factors.advanceCounter(row.id(), subject, step)
-                            .map(rows -> rows != null && rows > 0L);
-                })
+                .concatMap(row -> verifyTotpRow(subject, code, row))
                 .filter(Boolean::booleanValue)
                 .next()
                 .defaultIfEmpty(false);
+    }
+
+    /** Verify a single TOTP factor row: decrypt secret, check code, advance replay floor. */
+    private Mono<Boolean> verifyTotpRow(String subject, String code, MfaFactorRow row) {
+        String secret = cipher.decrypt(row.totpSecretEnc());
+        if (secret == null) {
+            return Mono.just(false);
+        }
+        long floor = row.lastCounter() == null ? -1L : row.lastCounter();
+        long step = totp.verify(secret, floor, code);
+        if (step < 0) {
+            return Mono.just(false);
+        }
+        // Advance the replay floor; the SQL guard (last_counter < step) makes a
+        // concurrent replay of the same step lose -> 0 rows -> not satisfied.
+        return factors.advanceCounter(row.id(), subject, step)
+                .map(rows -> rows != null && rows > 0L);
     }
 
     // ── recovery code ─────────────────────────────────────────────────────────────────
@@ -136,24 +139,35 @@ public class BffStoredMfaFactorVerifier implements MfaFactorVerifier {
         return webauthnCredentials.findByCredentialId(credentialId)
                 // OWNER GUARD: the credential must belong to the asserting subject + be enabled.
                 .filter(c -> subject.equals(c.ownerSubject()) && c.enabled())
-                .flatMap(cred -> Mono.fromCallable(() ->
-                                webauthn.verifyAssertion(assertionJson, challenge,
-                                        cred.publicKeyCose(), cred.signCount()))
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .flatMap(newCount -> {
-                            // Advance the sign count monotonically. The SQL guard
-                            // (sign_count < newCount) is the clone backstop; for a genuine
-                            // always-0-counter authenticator (stored 0, new 0) WebAuthn4J
-                            // already passed the assertion, so accept without an advance.
-                            if (newCount > cred.signCount()) {
-                                return webauthnCredentials
-                                        .advanceSignCount(cred.id(), subject, newCount)
-                                        .map(rows -> rows != null && rows > 0L);
-                            }
-                            return Mono.just(cred.signCount() == 0L && newCount == 0L);
-                        })
-                        .onErrorResume(WebAuthnService.WebAuthnException.class,
-                                e -> Mono.just(false)))
+                .flatMap(cred -> verifyAndAdvanceSignCount(subject, assertionJson, challenge, cred))
                 .defaultIfEmpty(false);
+    }
+
+    /** Verify the WebAuthn assertion then advance the stored sign count (clone backstop). */
+    private Mono<Boolean> verifyAndAdvanceSignCount(String subject, String assertionJson,
+                                                    String challenge,
+                                                    WebAuthnCredentialRow cred) {
+        return Mono.fromCallable(() ->
+                        webauthn.verifyAssertion(assertionJson, challenge,
+                                cred.publicKeyCose(), cred.signCount()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(newCount -> advanceSignCountIfChanged(subject, cred, newCount))
+                .onErrorResume(WebAuthnService.WebAuthnException.class,
+                        e -> Mono.just(false));
+    }
+
+    /** Advance the sign count monotonically; accept a genuine always-0-counter authenticator. */
+    private Mono<Boolean> advanceSignCountIfChanged(String subject, WebAuthnCredentialRow cred,
+                                                    long newCount) {
+        // Advance the sign count monotonically. The SQL guard
+        // (sign_count < newCount) is the clone backstop; for a genuine
+        // always-0-counter authenticator (stored 0, new 0) WebAuthn4J
+        // already passed the assertion, so accept without an advance.
+        if (newCount > cred.signCount()) {
+            return webauthnCredentials
+                    .advanceSignCount(cred.id(), subject, newCount)
+                    .map(rows -> rows != null && rows > 0L);
+        }
+        return Mono.just(cred.signCount() == 0L && newCount == 0L);
     }
 }

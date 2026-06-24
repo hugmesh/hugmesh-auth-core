@@ -100,17 +100,21 @@ public class MfaEnrollmentService {
                 .next()
                 .switchIfEmpty(Mono.error(ApiException.notFound(
                         "no pending TOTP enrollment — begin enroll first")))
-                .flatMap(row -> {
-                    String secret = cipher.decrypt(row.totpSecretEnc());
-                    long step = totp.verify(secret,
-                            row.lastCounter() == null ? -1L : row.lastCounter(), passcode);
-                    if (step < 0) {
-                        return Mono.error(ApiException.unauthorized("TOTP code did not verify"));
-                    }
-                    // Enable the factor + stamp the accepted step, then (re)issue recovery codes.
-                    return factors.enableTotp(row.id(), ownerSubject, step)
-                            .then(regenerateRecoveryCodesInternal(ownerSubject));
-                });
+                .flatMap(row -> enableTotpAndIssueRecovery(ownerSubject, passcode, row));
+    }
+
+    /** Verify the in-progress TOTP code, enable the factor, and issue fresh recovery codes. */
+    private Mono<List<String>> enableTotpAndIssueRecovery(String ownerSubject, String passcode,
+                                                           MfaFactorRow row) {
+        String secret = cipher.decrypt(row.totpSecretEnc());
+        long step = totp.verify(secret,
+                row.lastCounter() == null ? -1L : row.lastCounter(), passcode);
+        if (step < 0) {
+            return Mono.error(ApiException.unauthorized("TOTP code did not verify"));
+        }
+        // Enable the factor + stamp the accepted step, then (re)issue recovery codes.
+        return factors.enableTotp(row.id(), ownerSubject, step)
+                .then(regenerateRecoveryCodesInternal(ownerSubject));
     }
 
     // ── recovery codes ─────────────────────────────────────────────────────────────────
@@ -205,16 +209,19 @@ public class MfaEnrollmentService {
                 .filter(f -> ownerSubject.equals(f.ownerSubject()))
                 .switchIfEmpty(Mono.error(ApiException.notFound("no such factor")))
                 .flatMap(f -> factors.deleteByIdAndOwner(factorId, ownerSubject)
-                        .flatMap(rows -> {
-                            if (rows == null || rows == 0L) {
-                                return Mono.just(false);
-                            }
-                            // If that was the last WEBAUTHN factor, prune the credential rows.
-                            if (MfaFactorRow.TYPE_WEBAUTHN.equals(f.type())) {
-                                return pruneWebAuthnIfNone(ownerSubject).thenReturn(true);
-                            }
-                            return Mono.just(true);
-                        }));
+                        .flatMap(rows -> onFactorDeleted(ownerSubject, f, rows)));
+    }
+
+    /** After the delete: prune orphaned WebAuthn credentials or return the delete outcome. */
+    private Mono<Boolean> onFactorDeleted(String ownerSubject, MfaFactorRow f, Long rows) {
+        if (rows == null || rows == 0L) {
+            return Mono.just(false);
+        }
+        // If that was the last WEBAUTHN factor, prune the credential rows.
+        if (MfaFactorRow.TYPE_WEBAUTHN.equals(f.type())) {
+            return pruneWebAuthnIfNone(ownerSubject).thenReturn(true);
+        }
+        return Mono.just(true);
     }
 
     private Mono<Void> pruneWebAuthnIfNone(String ownerSubject) {

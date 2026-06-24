@@ -94,30 +94,37 @@ public class MfaChallengeService {
                     log.debug("[mfa-challenge] factor verify failed (fail-closed): {}", e.toString());
                     return Mono.just(false);
                 })
-                .flatMap(verified -> {
-                    if (!Boolean.TRUE.equals(verified)) {
-                        log.debug("[mfa-challenge] factor not verified -> no stamp");
-                        return Mono.just(false);
-                    }
-                    // (a) AUTHORITATIVE: stamp the caller's exact session (immediate, no bleed).
-                    return store.stampMfaSatisfied(sessionToken, factor.amr())
-                            .flatMap(rows -> {
-                                if (rows == null || rows == 0L) {
-                                    // No session row to stamp (unknown/expired token) -> the
-                                    // verification succeeded but there is nothing to satisfy.
-                                    log.debug("[mfa-challenge] verified but no session row stamped");
-                                    return Mono.just(false);
-                                }
-                                // (b) ADVISORY + (c) FORCE-REFRESH: best-effort, never fail the challenge.
-                                return writeAdvisory(username)
-                                        .then(refresh.forceRefresh(subject, null))
-                                        .thenReturn(true)
-                                        .onErrorResume(e -> {
-                                            log.warn("[mfa-challenge] advisory leg best-effort failure "
-                                                    + "(session stamp already landed): {}", e.toString());
-                                            return Mono.just(true);
-                                        });
-                            });
+                .flatMap(verified -> onVerified(verified, subject, username, sessionToken, factor));
+    }
+
+    /** When verified=true: stamp the session, write advisory, force-refresh; else resolve false. */
+    private Mono<Boolean> onVerified(Boolean verified, String subject, String username,
+                                     String sessionToken, MfaFactorVerifier.Factor factor) {
+        if (!Boolean.TRUE.equals(verified)) {
+            log.debug("[mfa-challenge] factor not verified -> no stamp");
+            return Mono.just(false);
+        }
+        // (a) AUTHORITATIVE: stamp the caller's exact session (immediate, no bleed).
+        return store.stampMfaSatisfied(sessionToken, factor.amr())
+                .flatMap(rows -> onSessionStamped(rows, subject, username));
+    }
+
+    /** After the authoritative session stamp: write advisory + force-refresh, or fail-closed. */
+    private Mono<Boolean> onSessionStamped(Long rows, String subject, String username) {
+        if (rows == null || rows == 0L) {
+            // No session row to stamp (unknown/expired token) -> the
+            // verification succeeded but there is nothing to satisfy.
+            log.debug("[mfa-challenge] verified but no session row stamped");
+            return Mono.just(false);
+        }
+        // (b) ADVISORY + (c) FORCE-REFRESH: best-effort, never fail the challenge.
+        return writeAdvisory(username)
+                .then(refresh.forceRefresh(subject, null))
+                .thenReturn(true)
+                .onErrorResume(e -> {
+                    log.warn("[mfa-challenge] advisory leg best-effort failure "
+                            + "(session stamp already landed): {}", e.toString());
+                    return Mono.just(true);
                 });
     }
 

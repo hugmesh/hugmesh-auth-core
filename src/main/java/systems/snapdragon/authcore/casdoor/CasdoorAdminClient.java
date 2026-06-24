@@ -269,29 +269,34 @@ public class CasdoorAdminClient {
         String name = username == null ? "" : username.trim();
         if (name.isEmpty()) return Mono.empty();
         return getUser(name)
-                .flatMap(existing -> {
-                    // COPY the existing user object so the whole row is round-tripped back
-                    // (Casdoor update-user replaces the object); &columns=display_name then
-                    // restricts the persisted change to the displayName column.
-                    Map<String, Object> user = new LinkedHashMap<>(existing);
-                    user.put("displayName", displayName);
-                    return http.post()
-                            .uri(uri -> uri.path("/api/update-user")
-                                    .queryParam("id", organization + "/" + name)
-                                    .queryParam("columns", "display_name")
-                                    .build())
-                            .bodyValue(user)
-                            .retrieve()
-                            .bodyToMono(Map.class)
-                            .doOnNext(r -> warnIfNotOk("update-user(display_name)", name, r))
-                            .then();
-                })
+                .flatMap(existing -> postDisplayNameUpdate(name, displayName, existing))
                 // Absent user (getUser completes empty) -> nothing to merge.
                 .onErrorResume(e -> {
                     log.debug("[casdoor] displayName merge for {} tolerated (best-effort): {}",
                             name, e.toString());
                     return Mono.empty();
                 });
+    }
+
+    /** POST update-user restricted to the display_name column only (sibling-preserving). */
+    @SuppressWarnings("unchecked")
+    private Mono<Void> postDisplayNameUpdate(String name, String displayName,
+                                             Map<String, Object> existing) {
+        // COPY the existing user object so the whole row is round-tripped back
+        // (Casdoor update-user replaces the object); &columns=display_name then
+        // restricts the persisted change to the displayName column.
+        Map<String, Object> user = new LinkedHashMap<>(existing);
+        user.put("displayName", displayName);
+        return http.post()
+                .uri(uri -> uri.path("/api/update-user")
+                        .queryParam("id", organization + "/" + name)
+                        .queryParam("columns", "display_name")
+                        .build())
+                .bodyValue(user)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .doOnNext(r -> warnIfNotOk("update-user(display_name)", name, r))
+                .then();
     }
 
     /**
@@ -307,38 +312,43 @@ public class CasdoorAdminClient {
         String name = username == null ? "" : username.trim();
         if (name.isEmpty()) return Mono.empty();
         return getUser(name)
-                .flatMap(existing -> {
-                    // COPY the existing user object so the whole row is round-tripped back
-                    // (Casdoor update-user replaces the object); &columns=properties then
-                    // restricts the persisted change to the properties column.
-                    Map<String, Object> user = new LinkedHashMap<>(existing);
-                    Object propsRaw = existing.get("properties");
-                    Map<String, Object> props = (propsRaw instanceof Map<?, ?> m)
-                            ? new LinkedHashMap<>((Map<String, Object>) m)
-                            : new LinkedHashMap<>();
-                    if (value == null) {
-                        props.remove("mfa_satisfied_at");
-                    } else {
-                        props.put("mfa_satisfied_at", value);
-                    }
-                    user.put("properties", props);
-                    return http.post()
-                            .uri(uri -> uri.path("/api/update-user")
-                                    .queryParam("id", organization + "/" + name)
-                                    .queryParam("columns", "properties")
-                                    .build())
-                            .bodyValue(user)
-                            .retrieve()
-                            .bodyToMono(Map.class)
-                            .doOnNext(r -> warnIfNotOk("update-user(properties)", name, r))
-                            .then();
-                })
+                .flatMap(existing -> postMfaPropertyUpdate(name, value, existing))
                 // Absent user (getUser completes empty) -> nothing to merge.
                 .onErrorResume(e -> {
                     log.debug("[casdoor] mfa-property merge for {} tolerated (best-effort): {}",
                             name, e.toString());
                     return Mono.empty();
                 });
+    }
+
+    /** POST update-user restricted to the properties column only (sibling-preserving). */
+    @SuppressWarnings("unchecked")
+    private Mono<Void> postMfaPropertyUpdate(String name, @Nullable String value,
+                                             Map<String, Object> existing) {
+        // COPY the existing user object so the whole row is round-tripped back
+        // (Casdoor update-user replaces the object); &columns=properties then
+        // restricts the persisted change to the properties column.
+        Map<String, Object> user = new LinkedHashMap<>(existing);
+        Object propsRaw = existing.get("properties");
+        Map<String, Object> props = (propsRaw instanceof Map<?, ?> m)
+                ? new LinkedHashMap<>((Map<String, Object>) m)
+                : new LinkedHashMap<>();
+        if (value == null) {
+            props.remove("mfa_satisfied_at");
+        } else {
+            props.put("mfa_satisfied_at", value);
+        }
+        user.put("properties", props);
+        return http.post()
+                .uri(uri -> uri.path("/api/update-user")
+                        .queryParam("id", organization + "/" + name)
+                        .queryParam("columns", "properties")
+                        .build())
+                .bodyValue(user)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .doOnNext(r -> warnIfNotOk("update-user(properties)", name, r))
+                .then();
     }
 
     private Map<String, Object> userObject(String username, String email, boolean forbidden) {
@@ -382,26 +392,30 @@ public class CasdoorAdminClient {
         if (name.isEmpty()) {
             return Mono.error(new IllegalArgumentException("roleName is required"));
         }
-        return roleExists(name).flatMap(exists -> {
-            if (Boolean.TRUE.equals(exists)) {
-                log.debug("[casdoor] role {}/{} already exists — add-role skipped", organization, name);
-                return Mono.empty();
-            }
-            Map<String, Object> role = new LinkedHashMap<>();
-            role.put("owner", organization);
-            role.put("name", name);
-            role.put("displayName", name);
-            role.put("users", List.of());
-            role.put("isEnabled", true);
-            return http.post()
-                    .uri("/api/add-role")
-                    .bodyValue(role)
-                    .retrieve()
-                    .bodyToMono(Map.class)
-                    .doOnNext(r -> warnIfNotOk("add-role", name, r))
-                    .doOnSuccess(r -> log.info("[casdoor] created role {}/{}", organization, name))
-                    .then();
-        });
+        return roleExists(name).flatMap(exists -> postAddRoleIfAbsent(name, exists));
+    }
+
+    /** POST add-role when the role is absent; skip if it already exists (idempotent). */
+    @SuppressWarnings("unchecked")
+    private Mono<Void> postAddRoleIfAbsent(String name, Boolean exists) {
+        if (Boolean.TRUE.equals(exists)) {
+            log.debug("[casdoor] role {}/{} already exists — add-role skipped", organization, name);
+            return Mono.empty();
+        }
+        Map<String, Object> role = new LinkedHashMap<>();
+        role.put("owner", organization);
+        role.put("name", name);
+        role.put("displayName", name);
+        role.put("users", List.of());
+        role.put("isEnabled", true);
+        return http.post()
+                .uri("/api/add-role")
+                .bodyValue(role)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .doOnNext(r -> warnIfNotOk("add-role", name, r))
+                .doOnSuccess(r -> log.info("[casdoor] created role {}/{}", organization, name))
+                .then();
     }
 
     /** True iff a role with this exact name exists in the org (a get-role probe whose
