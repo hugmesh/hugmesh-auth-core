@@ -53,19 +53,22 @@ one implementation while the account/session **data** continues to live in admin
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.4.0 + snapdragon-commons 2.0.0 from `~/.m2`).
+Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.0.0 from `~/.m2`).
 
 ## Current State
-- **Version 2.3.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.2 /
-  Spring Cloud 2025.1 / Java 21**, inherited via `snapdragon-parent` (metapom) **2.4.0**
-  (which runs **PMD + Checkstyle + SpotBugs in FAIL mode**).
+- **Version 2.3.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.7 /
+  Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
+  `snapdragon-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs in FAIL
+  mode** and pins **testcontainers 2.0.5**).
 - Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy). **No cycle** —
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
   this jar (keeping r2dbc/casdoor/mfa off the gateway classpath, per the rationale above).
 - Reactive throughout: **Spring Data R2DBC** repositories (no raw SQL strings / inline
   `@Query`), matching the org data-access standard. Crypto via BouncyCastle
-  (AES-256-GCM); MFA via webauthn4j (WebAuthn) + TOTP.
+  (AES-256-GCM); MFA via **webauthn4j 0.31.7** (WebAuthn) + TOTP. webauthn4j 0.31 migrated
+  internally to Jackson 3 (`tools.jackson`), aligned with this module's Boot 4 / Jackson 3
+  stack; `WebAuthnService` uses the `CredentialRecord` API.
 - **BFF JWT custody (2.1.0)**: `BffSession` carries the OIDC-token-custody columns
   (`access_token_enc` / `refresh_token_enc` / `access_token_expires_at` /
   `custody_updated_at`, admin-bff band-180; alongside the changeset-150 MFA columns
