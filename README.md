@@ -53,14 +53,14 @@ one implementation while the account/session **data** continues to live in admin
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.0.0 from `~/.m2`).
+Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.7.0 from `~/.m2`).
 
 ## Current State
 - **Version 2.3.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
   `snapdragon-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs in FAIL
   mode** and pins **testcontainers 2.0.5**).
-- Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy). **No cycle** —
+- Depends on `snapdragon-commons` **2.7.0** (stateless security/tenancy). **No cycle** —
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
   this jar (keeping r2dbc/casdoor/mfa off the gateway classpath, per the rationale above).
@@ -116,8 +116,11 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   shared implementation.
 - **SSO end-to-end + e2e**: support the live Casdoor OIDC (PKCE) → opaque `bff_` session
   flow and the gateway exchange-filter path, with end-to-end tests.
-- **MFA**: WebAuthn + TOTP + recovery, per-role defaults and step-up — the shared MFA
-  store/verifier infrastructure for both BFFs.
+- **MFA BFF wiring** *(substrate done)*: the shared MFA store/verifier infrastructure
+  (TOTP, WebAuthn, recovery codes, `FactorType`/`CeremonyType` enums, DB-generated PKs) is
+  fully landed in this library (PRs #4, #6). What remains is BFF-side wiring: per-role MFA
+  defaults, step-up enforcement in admin-bff, and the Casdoor MFA bridge for the opaque
+  `bff_`-session flow.
 - Track the wider platform roadmap where it touches account/session/MFA: multi-tenancy
   superadmin, device-license registry, desktop app governance (SSO sudo), and OWASP
   pen-test + nuclei in CI.

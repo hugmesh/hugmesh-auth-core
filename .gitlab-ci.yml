@@ -3,8 +3,12 @@
 #
 # Resolves its parent (snapdragon-parent) and snapdragon-commons from the same registry. On the
 # default branch / on a tag the jar is deployed so the BFF child poms (user-bff, admin-bff) can
-# consume snapdragon-auth-core:2.0.0. Tests are pure-unit (no testcontainers), so `verify` needs
-# no Docker service.
+# consume snapdragon-auth-core:2.3.0.
+#
+# NOTE: The build:test stage requires Docker-in-Docker because the MFA-repo data-slice tests
+# (PR #6) run on real Postgres via Testcontainers (PostgresTestSupport). gen_random_uuid() and
+# INSERT ... RETURNING are Postgres features that H2 does not honour, so these tests cannot run
+# without a real Postgres container.
 
 stages:
   - build
@@ -13,6 +17,8 @@ stages:
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
   MAVEN_CLI_OPTS: "-B -ntp -s settings.xml"
+  DOCKER_HOST: "tcp://docker:2375"
+  TESTCONTAINERS_RYUK_DISABLED: "true"
 
 cache:
   key: "$CI_COMMIT_REF_SLUG"
@@ -21,7 +27,9 @@ cache:
 
 build:test:
   stage: build
-  image: eclipse-temurin:21-jdk
+  image: eclipse-temurin:25-jdk
+  services:
+    - docker:dind
   script:
     - ./mvnw $MAVEN_CLI_OPTS verify
   artifacts:
@@ -34,7 +42,7 @@ build:test:
 
 deploy:maven:
   stage: deploy
-  image: eclipse-temurin:21-jdk
+  image: eclipse-temurin:25-jdk
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
     - if: '$CI_COMMIT_TAG'
