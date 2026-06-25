@@ -126,5 +126,5 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the Snapdragon-Systems current-state brief and the repo's landed code at
-auth-core 2.3.0 (2026-06-24). Features beyond the brief and the actual code are
+auth-core 2.3.0 (2026-06-25). Features beyond the brief and the actual code are
 intentionally not invented here._
