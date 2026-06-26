@@ -78,4 +78,26 @@ class GatewayRevocationClientTest {
         StepVerifier.create(enabled().revokeCoarse("matrix", "alice", null, 86400L))
                 .verifyComplete();
     }
+
+    // ── revokeSubject (subject:<casdoorSub> key) ──────────────────────────────
+
+    @Test
+    void disabled_revokeSubject_completesEmpty_noRequest() {
+        // The disabled client must not attempt any HTTP call.
+        StepVerifier.create(disabled().revokeSubject("alice", "role-revoke", 3600L))
+                .verifyComplete();
+    }
+
+    @Test
+    void enabled_gatewayUnreachable_revokeSubject_completesEmpty_bestEffort() {
+        // Best-effort: connection refused to port 19998 must not propagate.
+        StepVerifier.create(enabled().revokeSubject("alice", "role-revoke", 3600L))
+                .verifyComplete();
+    }
+
+    @Test
+    void enabled_gatewayUnreachable_revokeSubject_nullReason_completesEmpty_bestEffort() {
+        StepVerifier.create(enabled().revokeSubject("bob", null, 0L))
+                .verifyComplete();
+    }
 }

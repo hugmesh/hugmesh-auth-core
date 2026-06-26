@@ -103,6 +103,47 @@ public class GatewayRevocationClient {
     }
 
     /**
+     * POST a per-subject revocation key to the gateway revocation list. The key shape
+     * is {@code subject:<casdoorSub>} (e.g. {@code subject:alice}), which the gateway's
+     * {@code RevocationGatewayFilter} matches against the JWT {@code sub} (or {@code id})
+     * claim on every authenticated request — denying ALL custody JWTs minted for that
+     * Casdoor user until the key expires.
+     *
+     * <p>Use cases:
+     * <ul>
+     *   <li><b>Role revoke</b> — when an admin revokes a role directly (via
+     *       {@code DELETE /bff/admin/roles/{role}/{user}}) the user's live custody JWT
+     *       retains the role for up to its natural TTL (default 1 h). Writing
+     *       {@code subject:<user>} here closes that window: the gateway denies the
+     *       stale JWT until it (and this key) naturally expire.</li>
+     *   <li><b>Suspension + role-drop</b> — complements the coarse homeserver ban
+     *       ({@link #revokeCoarse}) by also invalidating the custody JWT for the
+     *       suspended user, not just their homeserver tokens.</li>
+     * </ul>
+     *
+     * <p>The TTL should be {@code >=} the custody JWT lifetime (default 3 600 s / 1 h)
+     * so the revocation key outlives any stale JWT in flight.
+     *
+     * <p>Best-effort: errors are swallowed (logged). The authoritative desired-state
+     * is the {@code access_suspension} row / Casdoor membership; this is the
+     * fast-path propagation to the in-memory revocation cache.
+     *
+     * @param casdoorSub the Casdoor user's subject identifier (JWT {@code sub} / {@code id})
+     * @param reason     human-readable reason stored in Cassandra (may be null)
+     * @param ttlSeconds TTL for the Cassandra row; must be {@code >= custody JWT lifetime}.
+     *                   Use 0 or negative to take the table default (30 days).
+     */
+    public Mono<Void> revokeSubject(String casdoorSub, String reason, long ttlSeconds) {
+        String key = "subject:" + casdoorSub;
+        return postRevocation(key, reason, ttlSeconds)
+                .onErrorResume(e -> {
+                    log.warn("[gateway-revocation] best-effort revokeSubject({}) failed: {}",
+                            key, e.toString());
+                    return Mono.empty();
+                });
+    }
+
+    /**
      * DELETE the coarse ban key from the gateway revocation list (the restore path:
      * un-ban, suspension expiry). The gateway drops the key on this pod immediately;
      * other pods converge on their next poll tick.
