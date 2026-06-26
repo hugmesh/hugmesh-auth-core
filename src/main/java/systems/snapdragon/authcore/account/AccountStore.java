@@ -77,14 +77,21 @@ public class AccountStore {
     }
 
     /**
+     * Domain sentinel used when stamping the default/seed allowlist rows (single-tenant
+     * back-compat; mirrors the Liquibase {@code defaultValue="default"} on the column).
+     */
+    public static final String DEFAULT_DOMAIN = "default";
+
+    /**
      * Seed the admin emails into the durable allowlist on startup (idempotent
-     * upsert). Blocks intentionally — runs once at boot, off the request path.
+     * upsert). Uses DEFAULT_DOMAIN so it works on single-tenant clusters where there is
+     * no multi-issuer DomainRegistry. Blocks intentionally — runs once at boot.
      */
     @PostConstruct
     public void seedAdmins() {
         try {
             for (String email : admins) {
-                inviteEmail(email).block(Duration.ofSeconds(10));
+                inviteEmail(email, DEFAULT_DOMAIN).block(Duration.ofSeconds(10));
             }
             log.info("[account-store] seeded {} admin email(s) into the durable allowlist", admins.size());
         } catch (Exception e) {
@@ -92,40 +99,67 @@ public class AccountStore {
         }
     }
 
-    // ── Allowlist (admin-managed) ──────────────────────────────────────
+    // ── Allowlist (admin-managed, domain-scoped) ───────────────────────
+    /** Domain-scoped: handles visible to an admin of {@code domain}. */
+    public Flux<String> allowedEmails(String domain) {
+        return allowlist.findByProviderAndDomainOrderByHandle("google", domain).map(Allowlist::handle);
+    }
+
+    /** Unscoped: all email handles across ALL domains (SUPERADMIN). */
     public Flux<String> allowedEmails() {
         return allowlist.findByProviderOrderByHandle("google").map(Allowlist::handle);
     }
 
+    /** Domain-scoped: Discord handles visible to an admin of {@code domain}. */
+    public Flux<String> allowedDiscord(String domain) {
+        return allowlist.findByProviderAndDomainOrderByHandle("discord", domain).map(Allowlist::handle);
+    }
+
+    /** Unscoped: all Discord handles across ALL domains (SUPERADMIN). */
     public Flux<String> allowedDiscord() {
         return allowlist.findByProviderOrderByHandle("discord").map(Allowlist::handle);
     }
 
+    /**
+     * Registration gate: whether {@code email} is invited in ANY domain. Unscoped —
+     * single-tenant installs have a single brand; in multi-tenant the registration gate
+     * checks cross-brand permissively (domain-aware registration is a follow-up).
+     */
     public Mono<Boolean> isEmailInvited(String email) {
-        return isInvited("google", email);
+        return allowlist.existsByProviderAndHandle("google", email.toLowerCase());
     }
 
+    /** Registration gate: whether {@code handle} is invited in ANY domain (unscoped). */
     public Mono<Boolean> isDiscordInvited(String handle) {
-        return isInvited("discord", handle);
+        return allowlist.existsByProviderAndHandle("discord", handle.toLowerCase());
     }
 
-    private Mono<Boolean> isInvited(String provider, String handle) {
-        return allowlist.existsByProviderAndHandle(provider, handle.toLowerCase());
+    /** Domain-scoped invite — stamps the invite row with {@code domain}. */
+    public Mono<Void> inviteEmail(String email, String domain) {
+        return invite("google", email, domain);
     }
 
-    public Mono<Void> inviteEmail(String email)    { return invite("google", email); }
-    public Mono<Void> inviteDiscord(String handle) { return invite("discord", handle); }
-
-    private Mono<Void> invite(String provider, String handle) {
-        // Portable upsert: insert only if absent (composite PK), so a re-invite is a no-op.
-        return allowlist.insertIfAbsent(provider, handle.toLowerCase()).then();
+    /** Domain-scoped invite — stamps the invite row with {@code domain}. */
+    public Mono<Void> inviteDiscord(String handle, String domain) {
+        return invite("discord", handle, domain);
     }
 
-    public Mono<Void> revokeEmail(String email)    { return revokeFromAllowlist("google", email); }
-    public Mono<Void> revokeDiscord(String handle) { return revokeFromAllowlist("discord", handle); }
+    private Mono<Void> invite(String provider, String handle, String domain) {
+        return allowlist.insertIfAbsent(provider, handle.toLowerCase(), domain).then();
+    }
 
-    private Mono<Void> revokeFromAllowlist(String provider, String handle) {
-        return allowlist.deleteByProviderAndHandle(provider, handle.toLowerCase()).then();
+    /** Domain-scoped revoke — only removes the row in the caller's domain. */
+    public Mono<Void> revokeEmail(String email, String domain) {
+        return revokeFromAllowlist("google", email, domain);
+    }
+
+    /** Domain-scoped revoke — only removes the row in the caller's domain. */
+    public Mono<Void> revokeDiscord(String handle, String domain) {
+        return revokeFromAllowlist("discord", handle, domain);
+    }
+
+    private Mono<Void> revokeFromAllowlist(String provider, String handle, String domain) {
+        return allowlist.deleteByProviderAndHandleAndDomain(provider, handle.toLowerCase(), domain).then();
     }
 
     // ── Accounts (two-stage registration lifecycle) ────────────────────
@@ -308,13 +342,26 @@ public class AccountStore {
     public record MfaState(boolean satisfied, LocalDateTime satisfiedAt) {
     }
 
-    // ── Per-user namespace grants ──────────────────────────────────────
+    // ── Per-user namespace grants (domain-scoped) ──────────────────────
+    /**
+     * The namespaces the given account has access to. Admins receive the full NAMESPACES
+     * list regardless of domain (they are namespace-managers). Non-admins get their own
+     * grant rows (account-id scoped — no cross-user leakage).
+     */
     public Mono<List<String>> namespacesFor(Account a) {
         if (a.isAdmin()) return Mono.just(new ArrayList<>(NAMESPACES));
         return grants.findByGranteeOrderByNamespace(a.id().toLowerCase())
                 .map(NamespaceGrant::namespace).collectList();
     }
 
+    /** Domain-scoped: all grants visible to an admin of {@code domain}. */
+    public Mono<List<Map<String, Object>>> allGrants(String domain) {
+        return grants.findByDomainOrderByGranteeAscNamespaceAsc(domain)
+                .collectList()
+                .map(AccountStore::toGrantList);
+    }
+
+    /** Unscoped: all grants across ALL domains (SUPERADMIN). */
     public Mono<List<Map<String, Object>>> allGrants() {
         return grants.findAllByOrderByGranteeAscNamespaceAsc()
                 .collectList()
@@ -323,7 +370,6 @@ public class AccountStore {
 
     /** Group a flat list of NamespaceGrant rows into a per-grantee list-of-maps. */
     private static List<Map<String, Object>> toGrantList(List<NamespaceGrant> rows) {
-        // Group namespaces per grantee, preserving first-seen order.
         Map<String, List<String>> byUser = new LinkedHashMap<>();
         for (NamespaceGrant r : rows) {
             byUser.computeIfAbsent(r.grantee(), k -> new ArrayList<>()).add(r.namespace());
@@ -340,12 +386,14 @@ public class AccountStore {
 
     public boolean isValidNamespace(String ns) { return NAMESPACES.contains(ns); }
 
-    public Mono<Void> grant(String user, String namespace) {
-        return grants.insertIfAbsent(user.toLowerCase(), namespace).then();
+    /** Domain-scoped grant — stamps the row with {@code domain}. */
+    public Mono<Void> grant(String user, String namespace, String domain) {
+        return grants.insertIfAbsent(user.toLowerCase(), namespace, domain).then();
     }
 
-    public Mono<Void> revoke(String user, String namespace) {
-        return grants.deleteByGranteeAndNamespace(user.toLowerCase(), namespace).then();
+    /** Domain-scoped revoke — only removes the row in the caller's domain. */
+    public Mono<Void> revoke(String user, String namespace, String domain) {
+        return grants.deleteByGranteeAndNamespaceAndDomain(user.toLowerCase(), namespace, domain).then();
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
