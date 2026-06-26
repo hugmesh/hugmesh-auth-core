@@ -162,7 +162,7 @@ class AccountStoreDomainScopeTest {
         when(grants.findAllByOrderByGranteeAscNamespaceAsc()).thenReturn(Flux.just(xRow, yRow));
 
         StepVerifier.create(store().allGrants())
-                .assertNext(list -> assert list.size() == 2)
+                .assertNext(list -> { assert list.size() == 2; })
                 .verifyComplete();
 
         verify(grants).findAllByOrderByGranteeAscNamespaceAsc();
