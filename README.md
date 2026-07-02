@@ -53,14 +53,15 @@ one implementation while the account/session **data** continues to live in admin
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.7.0 from `~/.m2`).
+Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.0.0 from `~/.m2`).
 
 ## Current State
 - **Version 2.3.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
   `snapdragon-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs in FAIL
   mode** and pins **testcontainers 2.0.5**).
-- Depends on `snapdragon-commons` **2.7.0** (stateless security/tenancy). **No cycle** —
+- Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy; #23 pinned the
+  real coordinate — a `2.7.0` commons was never published). **No cycle** —
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
   this jar (keeping r2dbc/casdoor/mfa off the gateway classpath, per the rationale above).
