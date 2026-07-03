@@ -86,6 +86,18 @@ Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-
   may only list THEIR OWN sessions); expired rows are filtered at the DB (`expires_at >
   now()`), newest-first, and projected to `BffSessionRow` so callers never touch the entity's
   custody/MFA internals.
+- **Domain-scoped allowlist + namespace grants (changeset 220)**: `Allowlist` and
+  `NamespaceGrant` now carry a `domain` field (composite PK `provider/handle/domain` and
+  `grantee/namespace/domain` respectively) closing a BOLA/IDOR gap where a brand-X admin
+  could read/write/delete brand-Y's invite or namespace-grant rows. `AllowlistRepository` /
+  `NamespaceGrantRepository` expose domain-scoped finders, deletes, and a 3-arg
+  `insertIfAbsent(..., domain)`; existing rows back-fill to `"default"`. The registration-gate
+  read `existsByProviderAndHandle` is intentionally left **unscoped** (see Known Gaps below).
+- **Subject-level revocation (`GatewayRevocationClient.revokeSubject`)**: writes a
+  `subject:<casdoorSub>` key so the gateway's `RevocationGatewayFilter` denies a user's
+  live custody JWT immediately on role-revoke, instead of waiting out its natural TTL
+  (default 1 h). Same best-effort / `broker.gateway-revocation.enabled`-gated pattern as the
+  existing coarse homeserver-ban revocation (`revokeCoarse` / `clearCoarse`).
 - **DB-generated MFA UUID PKs (2.3.0)**: the `mfa_factor` / `mfa_recovery_code` /
   `webauthn_credential` / `webauthn_challenge` `id` columns are NO LONGER minted in Java —
   the production columns carry a `DEFAULT (gen_random_uuid())::text` (admin-bff changeset
@@ -110,6 +122,30 @@ Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-
 - CI is **GitLab** (no GitHub Actions). Single `main` branch; no in-flight feature
   branches or open PRs at time of writing.
 
+## Known Gaps / TODO
+Verified against the current code (no invented gaps):
+- **Registration-gate allowlist check is cross-brand permissive** — `AllowlistRepository
+  .existsByProviderAndHandle` (used by `AccountStore` for the Google/Discord invite check)
+  is intentionally left **unscoped** by domain, so a handle invited to brand X's allowlist
+  also passes the registration gate for brand Y. Fixing this needs OAuth-flow domain
+  context that isn't available at that call site yet — noted as a follow-up in the
+  domain-scoping change itself (`AllowlistRepository.java:17-18`,
+  `AccountStore.java:129,134`).
+- **Gateway revocation writes are a no-op unless explicitly enabled** —
+  `GatewayRevocationClient.revokeCoarse` / `revokeSubject` / `clearCoarse` all short-circuit
+  to a logged STUB (`Mono.empty()`) when `broker.gateway-revocation.enabled` is `false`
+  (the default), so in dev/test/CI (and any prod deployment that hasn't flipped the flag)
+  the fast-path JWT/homeserver-token revocation never reaches the gateway — only the
+  authoritative Postgres row (`access_suspension`) is written
+  (`GatewayRevocationClient.java:49-53,168-196`).
+- **MFA BFF wiring not yet complete** — per the Roadmap below, the MFA store/verifier
+  substrate (TOTP, WebAuthn, recovery codes) is fully landed here, but per-role MFA
+  defaults, step-up enforcement in admin-bff, and the Casdoor MFA bridge for the opaque
+  `bff_`-session flow are still outstanding BFF-side work, not in this jar.
+- **SSO end-to-end + e2e tests** — the live Casdoor OIDC (PKCE) → opaque `bff_` session
+  flow and the gateway exchange-filter path are called out in the Roadmap as not yet
+  covered by end-to-end tests.
+
 ## Roadmap
 This jar advances in lockstep with the platform auth roadmap; the next increments are:
 - **Adopt the jar across BFFs**: with the extraction landed, complete admin-bff + user-bff
@@ -127,5 +163,6 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the Snapdragon-Systems current-state brief and the repo's landed code at
-auth-core 2.3.0 (2026-06-25). Features beyond the brief and the actual code are
+auth-core 2.3.0 (2026-06-26, through the domain-scoping fix in PR #19 and the
+`revokeSubject` addition in PR #20). Features beyond the brief and the actual code are
 intentionally not invented here._
