@@ -18,8 +18,10 @@ import java.util.Map;
  * the session lifecycle; it does not delegate to Spring's OAuth2 login machinery):
  *
  * <ol>
- *   <li>{@link #exchangeCode} — the PKCE authorization-code exchange the user-bff
- *       {@code /bff/auth/callback} performs after login-ui redirects back with {@code code}.</li>
+ *   <li>{@link #exchangeCode} — the PKCE authorization-code exchange the user-bff runs
+ *       entirely server-side inside {@code /bff/login}: after it drives the login-ui
+ *       username/password credentials through Casdoor and receives a {@code code}, it swaps
+ *       that code for tokens here. No browser redirect or callback is involved.</li>
  *   <li>{@link #refresh} — the {@code grant_type=refresh_token} leg the admin-bff
  *       {@code /bff/internal/session/exchange} endpoint uses to lazily re-mint a held access
  *       token before it expires (and that {@link RawJwtRefreshService} delegates to).</li>
