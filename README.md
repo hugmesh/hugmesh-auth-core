@@ -26,11 +26,13 @@ account+session API (mTLS + `X-Internal-Token`); user-bff owns the login/OIDC **
 and reaches the data via that internal API.
 
 ## Where this fits in the auth model
-Casdoor is the SSO IdP. `login-ui` runs a Casdoor OIDC authorization-code (PKCE) redirect;
-**user-bff** does the server-side code→token exchange and holds per-session JWT
-custody/refresh. The browser only ever holds an **opaque `bff_`-prefixed session** — the
-user never sees their own Casdoor JWT. The gateway is a pure Casdoor-JWT OAuth2 resource
-server: a pre-security exchange filter swaps `bff_` → the internal custody JWT, then the
+Casdoor is the SSO IdP. `login-ui` renders a **native username/password (+MFA)** form and
+POSTs to `/bff/login`; **user-bff** generates PKCE+state **server-side** and calls the
+**internal** Casdoor `/api/login`, then exchanges the code and holds per-session JWT
+custody/refresh. The browser is **never redirected to Casdoor** and only ever holds an
+**opaque `bff_`-prefixed session** — the user never sees their own Casdoor JWT. The gateway
+is a pure Casdoor-JWT OAuth2 resource server: a pre-security exchange filter swaps `bff_` →
+the internal custody JWT, then the
 gateway's JWT validation + the data-driven `GatewayRouteAccessFilter`
 (`gateway_route_access` Postgres table is the source of truth) run unchanged
 (ADMIN/GAME-MASTER bypass within own domain, SUPERADMIN cross-domain).
