@@ -167,7 +167,13 @@ public class AccountStore {
         return provider + ":" + handle.toLowerCase();
     }
 
-    /** Get-or-create the account for an invited identity (registrationComplete=false). */
+    /** Get-or-create the account for an invited identity (registrationComplete=false).
+     *  BYTE-IDENTICAL to the pre-existing behavior: an existing account is a pure
+     *  READ, never rewritten — only a brand-new account gets the
+     *  google-admin-emails-derived default. No Casdoor roles to sync from (the
+     *  google/discord provider paths — see {@link #ensureAccount(String, String, List)}
+     *  for the native-login path, which DOES have a real roles claim to sync and
+     *  DOES rewrite an existing row to keep it in sync). */
     public Mono<Account> ensureAccount(String provider, String handle) {
         String h = handle.toLowerCase();
         String id = idFor(provider, h);
@@ -177,6 +183,41 @@ public class AccountStore {
         return account(id).switchIfEmpty(
                 accounts.save(new AccountRow(id, provider, h, false, rolesCsv, LocalDateTime.now(), true))
                         .thenReturn(new Account(id, provider, h, false, roles)));
+    }
+
+    /** Get-or-create the account for an invited identity, SYNCING {@code roles} (the
+     *  lowercase, unprefixed set derived from the Casdoor JWT {@code roles} claim —
+     *  see the native-login caller) onto the row on EVERY call, not just at creation.
+     *  Without this, a Casdoor role grant/revoke after first login would never reach
+     *  the BFF session (the account row is otherwise create-once): the native-login
+     *  {@code POST /bff/login} path calls this on every successful sign-in specifically
+     *  so the cached roles never drift from the Casdoor source of truth.
+     *
+     *  <p>{@code roles} null/empty defers ENTIRELY to the 2-arg overload above —
+     *  including its read-only-for-existing-accounts behavior — rather than
+     *  independently recomputing the google-admin-emails default and rewriting the
+     *  row here. (An earlier draft of this method inlined that recompute-and-rewrite
+     *  for the null/empty case too, which would have made a repeat
+     *  {@code /register/google}-style call silently re-derive and OVERWRITE an
+     *  existing account's stored admin flag from the LIVE {@code app.admin-emails}
+     *  config on every call — a real behavior change from the original
+     *  read-only-for-existing-accounts contract, not the byte-identical delegation
+     *  this javadoc claims. Caught in review before merge.) */
+    public Mono<Account> ensureAccount(String provider, String handle, List<String> roles) {
+        if (roles == null || roles.isEmpty()) {
+            return ensureAccount(provider, handle);
+        }
+        String h = handle.toLowerCase();
+        String id = idFor(provider, h);
+        String rolesCsv = String.join(",", roles);
+        return accounts.findById(id)
+                .flatMap(existing -> accounts.save(new AccountRow(
+                                id, provider, h, existing.registrationComplete(), rolesCsv,
+                                LocalDateTime.now(), false))
+                        .map(AccountStore::toAccount))
+                .switchIfEmpty(
+                        accounts.save(new AccountRow(id, provider, h, false, rolesCsv, LocalDateTime.now(), true))
+                                .thenReturn(new Account(id, provider, h, false, roles)));
     }
 
     public Mono<Account> account(String id) {
