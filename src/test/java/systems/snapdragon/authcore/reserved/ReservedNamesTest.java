@@ -40,10 +40,10 @@ class ReservedNamesTest {
     }
 
     @Test
-    void reservedSetIsExactlyTheCanonicalSeventy() {
+    void reservedSetIsExactlyTheCanonical77Labels() {
         // Guards against silent drift from the canonical reserved-prefixes.yaml
-        // (and the RESERVED_LABELS copies in snapdragon-federation-api /
-        // snapdragon-user-bff-api): the count must stay 70 (the union of gateway
+        // (and the RESERVED[_LABELS] copies in snapdragon-federation-api /
+        // snapdragon-actions): the count must stay 77 (the union of gateway
         // prefixes, reserved subdomains, the snapdragon.games app prefixes, and the
         // defensive web/infra names — incl. the federated 'forum'/'phpbb' forum
         // labels). The neutral '@system' notification sender (Notifications PR3) is
@@ -54,7 +54,11 @@ class ReservedNamesTest {
         // Service the /games/servers/** route targets).
         // 64 -> 70: reconciled with the canonical YAML — added `superadmin`,
         // `_synapse`, `media`, `phpbb`, `owncast`, `wiki` (canonical revision 3).
-        assertThat(ReservedNames.RESERVED).hasSize(70);
+        // 70 -> 77: reconciled with canonical revisions 4-6 — added
+        // `character-studio`, `v1` (revision 4), `index.html`, `favicon.ico`,
+        // `importmap.json`, `remoteentry.json` (revision 5 fe webroot filenames),
+        // and `ai` (revision 6 edge-AI host).
+        assertThat(ReservedNames.RESERVED).hasSize(77);
     }
 
     @ParameterizedTest
@@ -77,6 +81,24 @@ class ReservedNamesTest {
         // (the publicly-routable homeserver client surfaces /_synapse/** + /media/**),
         // `phpbb` (the phpBB forum forward-reserve), and `owncast` + `wiki` (the
         // optional video/wiki services, forward-reserved like forum/phpbb).
+        assertThat(ReservedNames.isReserved(label)).isTrue();
+        assertThat(ReservedNames.RESERVED).contains(label);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "character-studio", "v1", "index.html", "favicon.ico",
+            "importmap.json", "remoteentry.json", "ai"})
+    void everyCanonicalRevision4To6LabelIsReserved(String label) {
+        // The 7 labels added to reconcile this copy with canonical revisions 4-6 of
+        // reserved-prefixes.yaml: `character-studio` (the Character Studio VN
+        // micro-frontend /character-studio/** fe-gateway route) + `v1` (the edge-AI
+        // /v1/analyze/** be-gateway route) — revision 4; `index.html`, `favicon.ico`,
+        // `importmap.json`, `remoteentry.json` (the fe-gateway anonymous-SPA-shell
+        // webroot filenames) — revision 5; and `ai` (the edge-AI inference-tier host
+        // ai.snapdragon.systems) — revision 6. Stored lower-case like every other
+        // entry (the on-disk manifest filename is "remoteEntry.json" — matching is
+        // case-insensitive; isReserved() lower-cases the candidate first).
         assertThat(ReservedNames.isReserved(label)).isTrue();
         assertThat(ReservedNames.RESERVED).contains(label);
     }
@@ -105,7 +127,12 @@ class ReservedNamesTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"ADMIN", "Admin", "  Login  ", "GAMES", "Api"})
+    @ValueSource(strings = {
+            "ADMIN", "Admin", "  Login  ", "GAMES", "Api",
+            // remoteEntry.json is the actual mixed-case on-disk manifest filename;
+            // stored lower-case in the set, the case-insensitive raw-form compare in
+            // isReserved() still catches the mixed-case candidate.
+            "remoteEntry.json", "RemoteEntry.JSON"})
     void reservedCheckIsCaseInsensitiveAndTrimmed(String label) {
         assertThat(ReservedNames.isReserved(label)).isTrue();
     }
@@ -122,7 +149,7 @@ class ReservedNamesTest {
     @Test
     void systemLivesInTheSeparatePlatformInternalSet_notTheCanonicalCrossRepoSet() {
         // 'system' is reserved via the SEPARATE platform-internal set, NOT the canonical
-        // RESERVED block — so it does NOT change the cross-repo size-62 contract below and
+        // RESERVED block — so it does NOT change the cross-repo size-77 contract below and
         // requires no byte-for-byte edit to the sibling ReservedNames copies.
         assertThat(ReservedNames.RESERVED).doesNotContain("system");
     }

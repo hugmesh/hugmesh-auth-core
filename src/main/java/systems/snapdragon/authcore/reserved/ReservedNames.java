@@ -58,10 +58,18 @@ public final class ReservedNames {
             // superadmin: TAILNET superadmin App-Store console route prefix
             // (/superadmin/appstore/** on the superadmin-gateway)
             "superadmin",
+            // character-studio: the Character Studio (VN) micro-frontend remote,
+            // served at /character-studio/** on the fe-gateway
+            // (apps/20-gateway-fe.yaml route[character-studio-ui].path)
+            "character-studio",
             // be-gateway route prefixes + publicly-routable homeserver surfaces
             // (_synapse: /_synapse/** Matrix Synapse-compat; media: /media/** Mastodon)
             "api", "_matrix", "matrix", "_synapse", "media", "mastodon", "pleroma",
             "forum", "phpbb", "oauth", "oauth2",
+            // edge-AI routes: ai.snapdragon.systems (the edge-AI inference tier
+            // host, route[edge-ai].host) + /v1/analyze/** (the edge-AI analysis
+            // API path, route[edge-ai-analysis].path, both apps/20-gateway-be.yaml)
+            "ai", "v1",
             // optional-service route prefixes / reserved subdomains: LocalTube
             // (/tube/content/** route-access seed) + the optional video/wiki services
             // (owncast/wiki ride /bff/** + /social/wiki/**; reserved so a vanity
@@ -74,9 +82,16 @@ public final class ReservedNames {
             "actuator", "metrics", "well-known", "favicon", "robots",
             "sitemap", "status", "support", "help", "social", "gm",
             "pki", "vault", "argocd", "gitlab", "registry",
+            // FE webroot static / module-federation manifest filenames (fe-gateway
+            // anonymous-SPA-shell rows, distinct literal first-segments from the
+            // already-reserved bare "favicon" label above). Stored lower-case
+            // (like every other entry here) though the canonical spec/on-disk
+            // filename is "remoteEntry.json" — this set's match is documented
+            // case-insensitive and isReserved() always lower-cases the candidate.
+            "index.html", "favicon.ico", "importmap.json", "remoteentry.json",
             // NOTE: the neutral @system notification SENDER (Notifications PR3) is reserved
             // via the SEPARATE RESERVED_PLATFORM_INTERNAL set below — NOT this canonical
-            // cross-repo RESERVED block — so it stays out of the size-70 canonical-sync
+            // cross-repo RESERVED block — so it stays out of the size-77 canonical-sync
             // contract while isReserved on the @system handle still fails closed.
             // (Do NOT quote that handle as a string literal here: the canonical
             // reserved-prefix validator harvests every quoted token inside this
@@ -98,7 +113,7 @@ public final class ReservedNames {
      * PLATFORM-INTERNAL reserved labels — names the PLATFORM ITSELF mints and which
      * therefore must never be claimable by a human-provisioned identity, but which are
      * NOT part of the cross-repo {@link #RESERVED} canonical-sync contract (so adding one
-     * here does NOT change the size-62 canonical guard, nor require a byte-for-byte edit
+     * here does NOT change the size-77 canonical guard, nor require a byte-for-byte edit
      * to the four sibling {@code ReservedNames} copies).
      *
      * <p>{@code system} is the per-domain neutral {@code @system} notifications sender
