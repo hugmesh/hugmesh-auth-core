@@ -96,6 +96,18 @@ class CasdoorAdminClientTest {
     }
 
     @Test
+    void usernameOf_stripsEmailLocalpart_regardlessOfProvider() {
+        // Native Casdoor-OIDC signups commonly derive the free-text casdoorUser from the
+        // JWT "email" claim (see InternalAccountController#subjectFromIdToken), so a
+        // provider="casdoor" handle is routinely email-shaped ("alice@gmail.com"). Casdoor
+        // usernames cannot carry '@' for ANY provider — the local-part must be stripped here
+        // too, not just for "google", or the minted role-member id never matches a real
+        // Casdoor role-membership entry and add/removeUserFromRole silently no-ops forever.
+        assertThat(CasdoorAdminClient.usernameOf("casdoor", "Alice@Gmail.com")).isEqualTo("alice");
+        assertThat(CasdoorAdminClient.usernameOf("matrix", "Bob@Example.org")).isEqualTo("bob");
+    }
+
+    @Test
     void ensureUser_newUser_addsUserThenAddsToRole() {
         Recorder rec = new Recorder();
         rec.userExists = false;

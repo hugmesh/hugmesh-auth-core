@@ -163,8 +163,14 @@ public class AccountStore {
     }
 
     // ── Accounts (two-stage registration lifecycle) ────────────────────
+    /** Folds {@code handle} the same way on every write path: trim + default-Locale-
+     *  independent lowercase (mirrors GatewayRouteAccessFilter#addNativeAccountIdForms,
+     *  which folds the equivalent native-account-id candidate via
+     *  {@code candidate.trim().toLowerCase(Locale.ROOT)}). Locale.ROOT avoids a
+     *  Turkish/Azeri-locale dotless-i divergence between the read and write sides;
+     *  the trim avoids a stray leading/trailing space minting a distinct account id. */
     public static String idFor(String provider, String handle) {
-        return provider + ":" + handle.toLowerCase();
+        return provider + ":" + (handle == null ? "" : handle.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     /** Get-or-create the account for an invited identity (registrationComplete=false).
@@ -175,7 +181,7 @@ public class AccountStore {
      *  for the native-login path, which DOES have a real roles claim to sync and
      *  DOES rewrite an existing row to keep it in sync). */
     public Mono<Account> ensureAccount(String provider, String handle) {
-        String h = handle.toLowerCase();
+        String h = handle == null ? "" : handle.trim().toLowerCase(java.util.Locale.ROOT);
         String id = idFor(provider, h);
         List<String> roles = ("google".equals(provider) && admins.contains(h))
                 ? List.of("user", "admin") : List.of("user");
@@ -207,7 +213,7 @@ public class AccountStore {
         if (roles == null || roles.isEmpty()) {
             return ensureAccount(provider, handle);
         }
-        String h = handle.toLowerCase();
+        String h = handle == null ? "" : handle.trim().toLowerCase(java.util.Locale.ROOT);
         String id = idFor(provider, h);
         String rolesCsv = String.join(",", roles);
         return accounts.findById(id)

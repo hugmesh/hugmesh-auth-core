@@ -517,16 +517,17 @@ public class CasdoorAdminClient {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
-    /** Casdoor username for a provider identity: the local-part for Gmail, the
-     *  handle for Discord (Casdoor usernames cannot carry '@'). Public so the
-     *  API layer can derive + gate the SAME candidate this client would mint. */
+    /** Casdoor username for a provider identity: the local-part of an email-shaped
+     *  handle (e.g. Gmail, or a native Casdoor-OIDC account whose free-text handle is
+     *  an email address), the handle as-is for Discord and other non-email handles.
+     *  Casdoor usernames cannot carry '@' — full stop, for ANY provider — so any
+     *  '@'-bearing handle always gets it and everything after it stripped, not just
+     *  for provider "google". Public so the API layer can derive + gate the SAME
+     *  candidate this client would mint. */
     public static String usernameOf(String provider, String handle) {
         String h = handle == null ? "" : handle.trim().toLowerCase();
-        if ("google".equals(provider)) {
-            int at = h.indexOf('@');
-            return at > 0 ? h.substring(0, at) : h;
-        }
-        return h;
+        int at = h.indexOf('@');
+        return at > 0 ? h.substring(0, at) : h;
     }
 
     private static void warnIfNotOk(String op, String subject, Map<?, ?> response) {
