@@ -15,8 +15,8 @@ import reactor.core.publisher.Mono;
  *
  * <p>Domain-scoped variants are the admin CRUD path. The unscoped
  * {@code findByGranteeOrderByNamespace} is retained for the user-facing "my namespaces"
- * read in {@link systems.snapdragon.adminbff.AuthController} (the user can only see their
- * own rows — account-id scope protects that path).
+ * read in admin-bff's {@code AuthController} (not part of this jar; the user can only see
+ * their own rows — account-id scope protects that path).
  */
 public interface NamespaceGrantRepository extends ReactiveCrudRepository<NamespaceGrant, String> {
 

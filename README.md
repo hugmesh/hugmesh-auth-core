@@ -43,25 +43,72 @@ stores and Casdoor-admin client that user-bff (login/session custody) and admin-
 **relocated from admin-bff to user-bff**; the reusable pieces land here so both BFFs share
 one implementation while the account/session **data** continues to live in admin-bff-db.
 
+### Native-login sequence
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant LoginUI as login-ui
+    participant UserBFF as user-bff (auth-core)
+    participant Casdoor
+    participant Gateway as gateway
+    participant AdminBFF as admin-bff (auth-core)
+
+    Browser->>LoginUI: username + password (+ MFA)
+    LoginUI->>UserBFF: POST /bff/login
+    UserBFF->>UserBFF: generate PKCE verifier and state
+    UserBFF->>Casdoor: internal POST /api/login
+    Casdoor-->>UserBFF: authorization code
+    UserBFF->>Casdoor: OidcExchangeClient redeems code for tokens
+    Casdoor-->>UserBFF: id_token, access_token, refresh_token
+    UserBFF->>UserBFF: AccountStore.ensureAccount syncs Casdoor roles
+    UserBFF->>UserBFF: AccountStore.newSession, stampCustody via BffCustodyCipher
+    UserBFF-->>Browser: opaque bff_ session (cookie or bearer)
+
+    Browser->>Gateway: request carrying the bff_ session
+    Gateway->>Gateway: BffSessionAuthFilter authenticates the session
+    Gateway->>AdminBFF: exchange filter swaps bff_ for the internal custody JWT
+    AdminBFF->>AdminBFF: BffCookieAuthenticationWebFilter resolves AccountStore.sessionOfToken
+    AdminBFF-->>Gateway: response
+    Gateway-->>Browser: response
+```
+
+The browser only ever holds the opaque `bff_` value; every Casdoor/custody token stays
+server-side, encrypted at rest by `BffCustodyCipher` when custody is stamped. `login-ui`,
+`gateway`, and `Casdoor` itself live outside this repo — this diagram traces where
+auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
+`BffCookieAuthenticationWebFilter`) sit in that cross-service flow.
+
 ## Status (extraction landed)
 - ✅ `account/` — Account, AccountRow(+repo), AccountStatus, AccountStore, Allowlist(+repo),
   BffSession(+repo), NamespaceGrant(+repo). Self-contained; builds against commons + r2dbc.
-- ✅ `casdoor/` — Casdoor-admin client/config, OIDC token-exchange client (`OidcExchangeClient`),
-  BFF-custody cipher (`BffCustodyCipher`), MFA challenge/step-up services, raw-JWT refresh.
+- ✅ `casdoor/` — Casdoor-admin client/config, OIDC token-exchange client (`OidcExchangeClient`,
+  optionally routed through gated outbound mTLS via `OidcExchangeClientSsl`), BFF-custody
+  cipher (`BffCustodyCipher`), MFA challenge/step-up services, raw-JWT refresh.
 - ✅ `mfa/` — TOTP, WebAuthn (webauthn4j), recovery codes, enrollment, secret cipher, and the
   R2DBC factor/credential/challenge rows + repositories.
-- ✅ `config/` — session-cookie + internal-token web filters and the internal-surface boot guard.
+- ✅ `config/` — session-cookie + internal-token web filters, the internal-surface boot guard,
+  and `BffCookieAuthenticationWebFilter` (bridges an opaque `bff_` session into a real Spring
+  Security `Authentication` for a consumer's own `hasAnyRole()`/`.authenticated()` gates —
+  today wired for admin-bff only, see Known Gaps).
 - ✅ `provision/` (gateway revocation client), `reserved/` (reserved-name gate),
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.0.0 from `~/.m2`).
+Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.0.0
+from `~/.m2`) — runs the full test suite as part of `package`. A handful of MFA-repo data-slice
+tests need a real Postgres via Testcontainers, so a local run also needs Docker (or `-Dtest=
+'!*PostgresTest'` to skip just those). `./mvnw -o clean verify` additionally runs PMD +
+Checkstyle + SpotBugs (see Current State / Known Gaps for their actual current enforcement
+status). Verified 2026-07-16: `clean verify` with Docker available — 314/314 tests green,
+0 Checkstyle/PMD violations, BUILD SUCCESS.
 
 ## Current State
-- **Version 2.3.0** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.3.4** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
-  `snapdragon-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs in FAIL
-  mode** and pins **testcontainers 2.0.5**).
+  `snapdragon-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs** during
+  `verify` and pins **testcontainers 2.0.5**; PMD/Checkstyle are confirmed fail-on-violation,
+  SpotBugs currently is not — see Known Gaps).
 - Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy; #23 pinned the
   real coordinate — a `2.7.0` commons was never published). **No cycle** —
   commons does not depend on this core.
@@ -113,10 +160,38 @@ Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-
   `webauthn_challenge.ceremony_type` discriminator) wrap the app-owned closed vocabularies as
   `@JsonValue`/`@JsonCreator` lenses over the persisted String columns — R2DBC mapping stays
   byte-identical and the legacy `TYPE_TOTP`/`TYPE_WEBAUTHN` constants delegate to the enum.
+- **Casdoor role sync on every login (2.3.1)**: `AccountStore.ensureAccount(provider, handle,
+  roles)` SYNCS a non-empty `roles` list onto the account row on every call, not just at
+  creation — a Casdoor role grant/revoke now reaches the BFF session on the very next login
+  instead of freezing at whatever was true the first time the account was provisioned. The
+  null/empty-roles path delegates entirely to the original 2-arg `ensureAccount(provider,
+  handle)`, which stays a pure read for an existing account (never rewrites it).
+- **Service-local `bff_` session bridge (2.3.2)**: `BffCookieAuthenticationWebFilter`
+  (`config/`) resolves an opaque `bff_` session directly via `AccountStore` and populates a
+  real Spring Security `Authentication`, so a consumer's own `hasAnyRole()`/`.authenticated()`
+  gates (previously only reachable by a real Casdoor JWT, since `oauth2ResourceServer().jwt()`
+  is correctly inert to an opaque token) also see native-login sessions. Only works for a
+  service with a LOCAL `AccountStore` bean (today: admin-bff only) — user-bff/mod-bff/
+  federation-api need a different, HTTP-based bridge (see Known Gaps).
+- **Gated outbound mTLS for the OIDC token exchange**: `OidcExchangeClientSsl` optionally
+  routes `OidcExchangeClient`'s Casdoor token-endpoint calls (the PKCE code/refresh leg, which
+  carries `client_secret` + tokens) through client-cert + cluster-CA mTLS, mirroring
+  user-bff's `FederationHttpClientSsl` (same `snapdragon.mtls.client.*` flag/property names).
+  Default OFF; degrades to plain HTTP with a warning if the gate is on but the keystore file
+  is absent, so a misconfigured pod never crash-loops on boot.
+- **Reserved-username canonical sync (2.3.3)**: `ReservedNames.RESERVED` carries the full
+  77-label canonical set (`reserved/ReservedNames.java`), kept byte-for-byte in sync with the
+  independent copies in `snapdragon-federation-api` and `snapdragon-actions`.
+- **Identity-fold correctness fixes (2.3.4)**: `CasdoorAdminClient#usernameOf` now strips a
+  trailing `@...` suffix for EVERY provider (previously only `google`), closing a bug where a
+  native `casdoor:` account whose handle is email-shaped (`casdoor:alice@gmail.com`) minted an
+  `@`-bearing Casdoor role-member id that could never match a real role membership; and
+  `AccountStore.idFor` (plus both `ensureAccount` overloads) now folds the write-side account
+  id via `trim() + toLowerCase(Locale.ROOT)`, matching the gateway's equivalent read-side fold.
 - **Extraction landed**: all packages from the blueprint — `account/`, `casdoor/`, `mfa/`,
-  `config/` (session-cookie + internal-token filters + boot guard), `provision/`,
-  `reserved/`, `username/`, `web/dto/` — have been extracted from admin-bff; admin-bff +
-  user-bff adopt this jar as login relocates to user-bff.
+  `config/` (session-cookie + internal-token filters + boot guard + the service-local `bff_`
+  bridge), `provision/`, `reserved/`, `username/`, `web/dto/` — have been extracted from
+  admin-bff; admin-bff + user-bff adopt this jar as login relocates to user-bff.
 - **No `spring.cloud.gateway.*` route config lives here** — this is a library, not a
   gateway; the SCG-5 route-namespace move
   (`spring.cloud.gateway.routes` → `spring.cloud.gateway.server.webflux.routes`) is a
@@ -147,6 +222,37 @@ Verified against the current code (no invented gaps):
 - **SSO end-to-end + e2e tests** — the live Casdoor OIDC (PKCE) → opaque `bff_` session
   flow and the gateway exchange-filter path are called out in the Roadmap as not yet
   covered by end-to-end tests.
+- **`BffCookieAuthenticationWebFilter` only bridges services with a LOCAL `AccountStore`** —
+  it resolves a `bff_` session by calling `AccountStore` directly against the DB, so it only
+  works where the service owns the accounts/bff_session tables itself (today: admin-bff).
+  user-bff, mod-bff, and federation-api have the identical gap on their own
+  `hasAnyRole()`/`.authenticated()` gates but don't have local DB access to those tables —
+  they need a different, HTTP-based bridge that resolves the session over the network
+  (mirroring the gateway's own `BffSessionAuthFilter`) instead of this class. Documented as
+  an intentional, tracked follow-up in the filter's own class-level Javadoc
+  (`config/BffCookieAuthenticationWebFilter.java`); not yet implemented anywhere.
+- **No column carries the Casdoor UUID `sub`** — `Account` is `{id, provider, handle,
+  registrationComplete, roles}` and `BffSession` has no `casdoor_sub`/subject column, so
+  nothing derived from the opaque `bff_`-session model can key off the Casdoor UUID subject
+  today (only the folded provider:handle id). Surfacing the UUID sub (e.g. for a gateway
+  introspect response) would need a new nullable schema column + `AccountStore` plumbing +
+  a version bump here, coordinated with whichever consumer needs it.
+- **SpotBugs "fail mode" is currently a no-op for this module — verified by running the real
+  build** (`./mvnw -o clean verify`, 2026-07-16): it logs `Parameter 'failOnViolation' is
+  unknown for plugin 'spotbugs-maven-plugin:4.9.8.2'` (inherited from `snapdragon-parent`
+  2.7.0's plugin config, which sets that parameter — the correct name for the PMD/Checkstyle
+  plugins, but SpotBugs's Maven plugin never had a parameter by that name) and then reports
+  `BUILD SUCCESS` despite 20 Medium `EI_EXPOSE_REP`/`EI_EXPOSE_REP2` findings in `account/`,
+  `casdoor/`, `mfa/`, and `username/`. Separately, the shared `snapdragon-build-config`
+  exclude filter's Spring-component suppression matches package names like
+  `service`/`controller`/`client`/`config`; this module's domain-named packages (`account`,
+  `casdoor`, `mfa`, `username`) don't match that pattern even though the classes inside them
+  ARE Spring-managed services/controllers/clients, so most of these 20 findings aren't
+  intentionally-excluded noise, they're simply unenforced right now. Root cause lives in
+  `snapdragon-parent` / `snapdragon-build-config` (not this repo, so not fixed here) — noted
+  because PMD and Checkstyle ARE confirmed enforced (both ran clean, 0 violations, in the same
+  `verify` run) but SpotBugs currently is not, contrary to this README's historical blanket
+  "FAIL mode" framing of all three analysers.
 
 ## Roadmap
 This jar advances in lockstep with the platform auth roadmap; the next increments are:
@@ -165,6 +271,5 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the Snapdragon-Systems current-state brief and the repo's landed code at
-auth-core 2.3.0 (2026-06-26, through the domain-scoping fix in PR #19 and the
-`revokeSubject` addition in PR #20). Features beyond the brief and the actual code are
-intentionally not invented here._
+auth-core 2.3.4 (2026-07-15, through the `usernameOf`/`idFor` identity-fold fix in PR #33).
+Features beyond the brief and the actual code are intentionally not invented here._

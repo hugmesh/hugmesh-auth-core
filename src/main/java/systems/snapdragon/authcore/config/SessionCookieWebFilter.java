@@ -59,7 +59,8 @@ public class SessionCookieWebFilter implements WebFilter {
      * Exchange attribute set to {@code Boolean.TRUE} by this bridge when it SYNTHESISES the
      * {@code Authorization: Bearer bff_...} header from the {@code bff_session} cookie (i.e. the
      * request arrived cookie-ONLY, with no real client-sent {@code bff_} Bearer). Downstream
-     * security wiring — notably the CSRF require-matcher in {@link SecurityConfig} — MUST consult
+     * security wiring — notably the CSRF require-matcher in the consumer's own
+     * {@code SecurityConfig} (not part of this jar) — MUST consult
      * this attribute rather than the (now bridge-mutated) {@code Authorization} header to decide
      * whether a {@code bff_} Bearer is a genuine client-sent carrier. Without it, the bridge's
      * synthesised header would masquerade as a real Bearer and wrongly exempt EVERY cookie-carried

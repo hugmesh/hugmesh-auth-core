@@ -22,6 +22,11 @@ import java.time.LocalDateTime;
  * {@link AccountStore#newSession} — they are stamped only by the dark custody endpoints, so a
  * 2.0.0 consumer running before band-180 reads them as null. Timestamps are {@code timestamp}
  * (no zone) → {@code LocalDateTime}, matching the facade's prior binds.
+ *
+ * TODO: no column here (or on {@link Account}) carries the Casdoor UUID {@code sub} — only
+ * the folded {@code provider:handle} id is persisted. A consumer that needs to key off the
+ * real Casdoor subject (e.g. a gateway introspect response) would need a new nullable
+ * {@code casdoor_sub} column + a version bump here; not yet needed by any landed feature.
  */
 @Table("bff_session")
 public record BffSession(

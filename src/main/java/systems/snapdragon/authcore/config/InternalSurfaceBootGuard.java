@@ -9,8 +9,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * PROD-PROFILE startup guard for the privilege-bearing {@code /bff/internal/**} surface. That
- * prefix is {@code permitAll()} at the Spring layer ({@link SecurityConfig}) and the sudo
- * ENTITLEMENT read under it leaks per-(subject, device) sudo state, so in production its ONLY
+ * prefix is {@code permitAll()} at the Spring layer ({@code SecurityConfig}, the consumer's own
+ * — not part of this jar) and the sudo ENTITLEMENT read under it leaks per-(subject, device)
+ * sudo state, so in production its ONLY
  * transport boundary is mutual-TLS ({@code server.ssl.enabled=true} +
  * {@code server.ssl.client-auth=need}). If a prod deployment were mis-wired with SSL disabled
  * or client-auth not required, that surface would be served in the clear to anything that could

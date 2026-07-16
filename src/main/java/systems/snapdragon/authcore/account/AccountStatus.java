@@ -24,7 +24,8 @@ import java.time.Instant;
  *
  * <p>The status is computed from the principal's OWN rows only (the suspension is
  * keyed to the person, never the reader's tenant), so it is the same answer
- * regardless of who asks — see {@link SuspensionService#statusFor}.
+ * regardless of who asks — see admin-bff's {@code SuspensionService#statusFor}
+ * (not part of this jar).
  */
 public record AccountStatus(String status, Instant until, String reason) {
 

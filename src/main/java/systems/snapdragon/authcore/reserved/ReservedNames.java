@@ -119,8 +119,10 @@ public final class ReservedNames {
      * <p>{@code system} is the per-domain neutral {@code @system} notifications sender
      * (Notifications PR3): each domain provisions a Casdoor {@code system} account that
      * sends account-status / infra / feature notifications. The whole reason to reserve
-     * it is so ONLY the platform's own {@link systems.snapdragon.authcore.notification}
-     * provisioner can mint it — a human registering {@code system} would be impersonating
+     * it is so ONLY the platform's own notification provisioner can mint it — via
+     * {@link systems.snapdragon.authcore.casdoor.CasdoorAdminClient#ensureLiteralUser},
+     * the one call in this jar that bypasses the reserved/confusable gate for a literal,
+     * platform-owned username — a human registering {@code system} would be impersonating
      * the neutral sender. {@link #isReserved(String)} consults this set too, so the
      * username gate + the admin/provision layer both fail-CLOSED on it.
      */

@@ -13,8 +13,8 @@ import java.time.LocalDateTime;
 /**
  * The Casdoor-MFA leg of the unified STEP-UP gate (A5). A FRESH {@code bff_session}
  * MFA stamp is a CO-EQUAL, LICENSE-INDEPENDENT satisfier of step-up alongside the
- * existing short-TTL {@link systems.snapdragon.authcore.workload.WorkloadStepUpService}
- * token. This service answers the single question the four step-up gates
+ * existing short-TTL {@code WorkloadStepUpService} token (admin-bff — not part of this
+ * jar). This service answers the single question the four step-up gates
  * (DeviceTerminal / ImageGen / SshKeyIssue / Backup) ask the MFA leg:
  *
  * <blockquote>does the opaque session carried by this request have a FRESH MFA

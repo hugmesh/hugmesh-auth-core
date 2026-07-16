@@ -15,13 +15,13 @@ import reactor.core.publisher.Mono;
 /**
  * Application-layer DEFENCE-IN-DEPTH for the {@code /bff/internal/**} surface — the in-cluster
  * node-to-BFF prefix that is {@code permitAll()} at the Spring authorization layer
- * ({@link SecurityConfig}) and otherwise relies SOLELY on the mTLS transport
+ * ({@code SecurityConfig}, the consumer's own — not part of this jar) and otherwise relies
+ * SOLELY on the mTLS transport
  * ({@code server.ssl.client-auth=need}) to keep non-cluster callers out. One of those internal
- * endpoints — the desktop sudo ENTITLEMENT read
- * ({@link systems.snapdragon.authcore.desktop.DesktopSudoEntitlementController}) — leaks
- * per-(subject, device) sudo state, so a SECOND, app-layer credential is layered on top of the
- * transport: this filter requires an env-injected internal-service token header on every
- * {@code /bff/internal/**} request.
+ * endpoints — the desktop sudo ENTITLEMENT read ({@code DesktopSudoEntitlementController},
+ * admin-bff — not part of this jar) — leaks per-(subject, device) sudo state, so a SECOND,
+ * app-layer credential is layered on top of the transport: this filter requires an
+ * env-injected internal-service token header on every {@code /bff/internal/**} request.
  *
  * <h3>fail-closed when configured, no-op when unset (matches the federation token idiom)</h3>
  * The token + header name come from {@code app.internal.token} / {@code app.internal.token-header}

@@ -3,7 +3,7 @@
 #
 # Resolves its parent (snapdragon-parent) and snapdragon-commons from the same registry. On the
 # default branch / on a tag the jar is deployed so the BFF child poms (user-bff, admin-bff) can
-# consume snapdragon-auth-core:2.3.0.
+# consume the version pinned in this repo's pom.xml.
 #
 # NOTE: The build:test stage requires Docker-in-Docker because the MFA-repo data-slice tests
 # (PR #6) run on real Postgres via Testcontainers (PostgresTestSupport). gen_random_uuid() and
