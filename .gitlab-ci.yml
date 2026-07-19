@@ -1,7 +1,7 @@
-# snapdragon-auth-core — compile, test, and publish the shared auth-core library jar to the
+# hugmesh-auth-core — compile, test, and publish the shared auth-core library jar to the
 # GitLab Maven Package Registry.
 #
-# Resolves its parent (snapdragon-parent) and snapdragon-commons from the same registry. On the
+# Resolves its parent (hugmesh-parent) and hugmesh-commons from the same registry. On the
 # default branch / on a tag the jar is deployed so the BFF child poms (user-bff, admin-bff) can
 # consume the version pinned in this repo's pom.xml.
 #

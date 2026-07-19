@@ -5,28 +5,28 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>systems.snapdragon</groupId>
-    <artifactId>snapdragon-parent</artifactId>
-    <version>2.7.0</version>
+    <groupId>systems.hugmesh</groupId>
+    <artifactId>hugmesh-parent</artifactId>
+    <version>2.8.0</version>
     <relativePath/>
   </parent>
 
-  <artifactId>snapdragon-auth-core</artifactId>
-  <version>2.3.4</version>
+  <artifactId>hugmesh-auth-core</artifactId>
+  <version>2.4.0</version>
   <packaging>jar</packaging>
-  <name>snapdragon-auth-core</name>
-  <description>Shared Snapdragon auth core (stateful): account/allowlist/bff-session store,
+  <name>hugmesh-auth-core</name>
+  <description>Shared HugMesh auth core (stateful): account/allowlist/bff-session store,
     Casdoor-admin client, MFA subsystem, session-cookie + internal-token filters. Depends
-    on snapdragon-commons (stateless security/tenancy). Consumed by user-bff (login/OIDC)
+    on hugmesh-commons (stateless security/tenancy). Consumed by user-bff (login/OIDC)
     and admin-bff (admin features). NOT folded into commons so the gateway keeps a light,
     r2dbc-free classpath.</description>
 
   <dependencies>
     <!-- stateless security/tenancy/web building blocks (Casdoor authorities, ApiException) -->
     <dependency>
-      <groupId>systems.snapdragon</groupId>
-      <artifactId>snapdragon-commons</artifactId>
-      <version>2.0.0</version>
+      <groupId>systems.hugmesh</groupId>
+      <artifactId>hugmesh-commons</artifactId>
+      <version>2.1.0</version>
     </dependency>
     <!-- reactive R2DBC for the @Table account/session/allowlist/mfa entities + repos -->
     <dependency>
@@ -53,11 +53,11 @@
          MFA-repo data slices: gen_random_uuid()/INSERT ... RETURNING (the DB-generated-UUID-PK
          migration) do NOT work on H2, so those slices run on REAL Postgres. The testcontainers
          stack (spring-boot-testcontainers / postgresql / junit-jupiter / r2dbc) is INHERITED
-         from snapdragon-parent's common <dependencies>. -->
+         from hugmesh-parent's common <dependencies>. -->
     <dependency>
-      <groupId>systems.snapdragon</groupId>
-      <artifactId>snapdragon-commons</artifactId>
-      <version>2.0.0</version>
+      <groupId>systems.hugmesh</groupId>
+      <artifactId>hugmesh-commons</artifactId>
+      <version>2.1.0</version>
       <classifier>tests</classifier>
       <scope>test</scope>
     </dependency>

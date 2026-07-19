@@ -1,21 +1,21 @@
-# snapdragon-auth-core
+# hugmesh-auth-core
 
-Shared **stateful** Snapdragon auth core — the account/session/MFA/Casdoor-admin
-infrastructure used by BOTH `snapdragon-user-bff-api` (login + OIDC token-handler) and
-`snapdragon-admin-bff-api` (admin features that read accounts/allowlist/suspension and
+Shared **stateful** HugMesh auth core — the account/session/MFA/Casdoor-admin
+infrastructure used by BOTH `hugmesh-user-bff-api` (login + OIDC token-handler) and
+`hugmesh-admin-bff-api` (admin features that read accounts/allowlist/suspension and
 drive MFA step-up).
 
-## Why a separate module (not `snapdragon-commons`)
-`snapdragon-commons` is the **light, stateless** security/tenancy jar that the **gateway**
+## Why a separate module (not `hugmesh-commons`)
+`hugmesh-commons` is the **light, stateless** security/tenancy jar that the **gateway**
 and every BFF depend on (Casdoor JWT authorities, issuer→domain registry, `ApiException`).
 This core is the opposite — reactive **R2DBC** entities/repos, Casdoor-admin **WebClient**,
 AES-256-GCM crypto, **TOTP/WebAuthn** — so folding it into commons would drag r2dbc + the
 Casdoor/MFA stack onto the gateway's classpath and risk its Boot-4 pin. So:
 
 ```
-snapdragon-commons   (light; stateless)      <- gateway + ALL services
-snapdragon-auth-core (heavy; r2dbc/casdoor/mfa) <- user-bff + admin-bff ONLY
-   └─ depends on snapdragon-commons            (no cycle)
+hugmesh-commons   (light; stateless)      <- gateway + ALL services
+hugmesh-auth-core (heavy; r2dbc/casdoor/mfa) <- user-bff + admin-bff ONLY
+   └─ depends on hugmesh-commons            (no cycle)
 ```
 
 ## Data ownership
@@ -95,7 +95,7 @@ auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves snapdragon-parent 2.7.0 + snapdragon-commons 2.0.0
+Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.7.0 + hugmesh-commons 2.0.0
 from `~/.m2`) — runs the full test suite as part of `package`. A handful of MFA-repo data-slice
 tests need a real Postgres via Testcontainers, so a local run also needs Docker (or `-Dtest=
 '!*PostgresTest'` to skip just those). `./mvnw -o clean verify` additionally runs PMD +
@@ -104,12 +104,12 @@ status). Verified 2026-07-16: `clean verify` with Docker available — 314/314 t
 0 Checkstyle/PMD violations, BUILD SUCCESS.
 
 ## Current State
-- **Version 2.3.4** on the unified Snapdragon ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.3.4** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
-  `snapdragon-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs** during
+  `hugmesh-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs** during
   `verify` and pins **testcontainers 2.0.5**; PMD/Checkstyle are confirmed fail-on-violation,
   SpotBugs currently is not — see Known Gaps).
-- Depends on `snapdragon-commons` **2.0.0** (stateless security/tenancy; #23 pinned the
+- Depends on `hugmesh-commons` **2.0.0** (stateless security/tenancy; #23 pinned the
   real coordinate — a `2.7.0` commons was never published). **No cycle** —
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
@@ -176,12 +176,12 @@ status). Verified 2026-07-16: `clean verify` with Docker available — 314/314 t
 - **Gated outbound mTLS for the OIDC token exchange**: `OidcExchangeClientSsl` optionally
   routes `OidcExchangeClient`'s Casdoor token-endpoint calls (the PKCE code/refresh leg, which
   carries `client_secret` + tokens) through client-cert + cluster-CA mTLS, mirroring
-  user-bff's `FederationHttpClientSsl` (same `snapdragon.mtls.client.*` flag/property names).
+  user-bff's `FederationHttpClientSsl` (same `hugmesh.mtls.client.*` flag/property names).
   Default OFF; degrades to plain HTTP with a warning if the gate is on but the keystore file
   is absent, so a misconfigured pod never crash-loops on boot.
 - **Reserved-username canonical sync (2.3.3)**: `ReservedNames.RESERVED` carries the full
   77-label canonical set (`reserved/ReservedNames.java`), kept byte-for-byte in sync with the
-  independent copies in `snapdragon-federation-api` and `snapdragon-actions`.
+  independent copies in `hugmesh-federation-api` and `hugmesh-actions`.
 - **Identity-fold correctness fixes (2.3.4)**: `CasdoorAdminClient#usernameOf` now strips a
   trailing `@...` suffix for EVERY provider (previously only `google`), closing a bug where a
   native `casdoor:` account whose handle is email-shaped (`casdoor:alice@gmail.com`) minted an
@@ -239,17 +239,17 @@ Verified against the current code (no invented gaps):
   a version bump here, coordinated with whichever consumer needs it.
 - **SpotBugs "fail mode" is currently a no-op for this module — verified by running the real
   build** (`./mvnw -o clean verify`, 2026-07-16): it logs `Parameter 'failOnViolation' is
-  unknown for plugin 'spotbugs-maven-plugin:4.9.8.2'` (inherited from `snapdragon-parent`
+  unknown for plugin 'spotbugs-maven-plugin:4.9.8.2'` (inherited from `hugmesh-parent`
   2.7.0's plugin config, which sets that parameter — the correct name for the PMD/Checkstyle
   plugins, but SpotBugs's Maven plugin never had a parameter by that name) and then reports
   `BUILD SUCCESS` despite 20 Medium `EI_EXPOSE_REP`/`EI_EXPOSE_REP2` findings in `account/`,
-  `casdoor/`, `mfa/`, and `username/`. Separately, the shared `snapdragon-build-config`
+  `casdoor/`, `mfa/`, and `username/`. Separately, the shared `hugmesh-build-config`
   exclude filter's Spring-component suppression matches package names like
   `service`/`controller`/`client`/`config`; this module's domain-named packages (`account`,
   `casdoor`, `mfa`, `username`) don't match that pattern even though the classes inside them
   ARE Spring-managed services/controllers/clients, so most of these 20 findings aren't
   intentionally-excluded noise, they're simply unenforced right now. Root cause lives in
-  `snapdragon-parent` / `snapdragon-build-config` (not this repo, so not fixed here) — noted
+  `hugmesh-parent` / `hugmesh-build-config` (not this repo, so not fixed here) — noted
   because PMD and Checkstyle ARE confirmed enforced (both ran clean, 0 violations, in the same
   `verify` run) but SpotBugs currently is not, contrary to this README's historical blanket
   "FAIL mode" framing of all three analysers.
@@ -270,6 +270,6 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   superadmin, device-license registry, desktop app governance (SSO sudo), and OWASP
   pen-test + nuclei in CI.
 
-_Grounded in the Snapdragon-Systems current-state brief and the repo's landed code at
+_Grounded in the HugMesh current-state brief and the repo's landed code at
 auth-core 2.3.4 (2026-07-15, through the `usernameOf`/`idFor` identity-fold fix in PR #33).
 Features beyond the brief and the actual code are intentionally not invented here._
