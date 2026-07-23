@@ -95,21 +95,26 @@ auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
-Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.7.0 + hugmesh-commons 2.0.0
+Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.8.0 + hugmesh-commons 2.1.0
 from `~/.m2`) — runs the full test suite as part of `package`. A handful of MFA-repo data-slice
 tests need a real Postgres via Testcontainers, so a local run also needs Docker (or `-Dtest=
 '!*PostgresTest'` to skip just those). `./mvnw -o clean verify` additionally runs PMD +
 Checkstyle + SpotBugs (see Current State / Known Gaps for their actual current enforcement
-status). Verified 2026-07-16: `clean verify` with Docker available — 314/314 tests green,
-0 Checkstyle/PMD violations, BUILD SUCCESS.
+status). Re-verified 2026-07-22: `clean test` with Docker available — 318/318 tests green
+(303/303 without Docker, skipping the Postgres slices), 0 Checkstyle/PMD violations, BUILD
+SUCCESS — but `clean verify` is currently **BUILD FAILURE**: the `hugmesh-parent` 2.8.0 bump
+fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the historical
+2.7.0 config used — see Known Gaps), so `verify` now genuinely fails on 8 real
+`EI_EXPOSE_REP2` findings.
 
 ## Current State
-- **Version 2.3.4** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.4.0** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
-  `hugmesh-parent` (metapom) **2.7.0** (which runs **PMD + Checkstyle + SpotBugs** during
-  `verify` and pins **testcontainers 2.0.5**; PMD/Checkstyle are confirmed fail-on-violation,
-  SpotBugs currently is not — see Known Gaps).
-- Depends on `hugmesh-commons` **2.0.0** (stateless security/tenancy; #23 pinned the
+  `hugmesh-parent` (metapom) **2.8.0** (which runs **PMD + Checkstyle + SpotBugs** during
+  `verify` and pins **testcontainers 2.0.5**; PMD and Checkstyle fail on violation, and — as
+  of the 2.8.0 bump — SpotBugs is genuinely in fail mode too (via `failOnError`); see Known
+  Gaps for the 8 real findings that currently fail `verify`).
+- Depends on `hugmesh-commons` **2.1.0** (stateless security/tenancy; #23 pinned the
   real coordinate — a `2.7.0` commons was never published). **No cycle** —
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
@@ -237,22 +242,27 @@ Verified against the current code (no invented gaps):
   today (only the folded provider:handle id). Surfacing the UUID sub (e.g. for a gateway
   introspect response) would need a new nullable schema column + `AccountStore` plumbing +
   a version bump here, coordinated with whichever consumer needs it.
-- **SpotBugs "fail mode" is currently a no-op for this module — verified by running the real
-  build** (`./mvnw -o clean verify`, 2026-07-16): it logs `Parameter 'failOnViolation' is
-  unknown for plugin 'spotbugs-maven-plugin:4.9.8.2'` (inherited from `hugmesh-parent`
-  2.7.0's plugin config, which sets that parameter — the correct name for the PMD/Checkstyle
-  plugins, but SpotBugs's Maven plugin never had a parameter by that name) and then reports
-  `BUILD SUCCESS` despite 20 Medium `EI_EXPOSE_REP`/`EI_EXPOSE_REP2` findings in `account/`,
-  `casdoor/`, `mfa/`, and `username/`. Separately, the shared `hugmesh-build-config`
-  exclude filter's Spring-component suppression matches package names like
-  `service`/`controller`/`client`/`config`; this module's domain-named packages (`account`,
-  `casdoor`, `mfa`, `username`) don't match that pattern even though the classes inside them
-  ARE Spring-managed services/controllers/clients, so most of these 20 findings aren't
-  intentionally-excluded noise, they're simply unenforced right now. Root cause lives in
-  `hugmesh-parent` / `hugmesh-build-config` (not this repo, so not fixed here) — noted
-  because PMD and Checkstyle ARE confirmed enforced (both ran clean, 0 violations, in the same
-  `verify` run) but SpotBugs currently is not, contrary to this README's historical blanket
-  "FAIL mode" framing of all three analysers.
+- **SpotBugs is now genuinely fail-mode and `./mvnw -o clean verify` currently FAILS on real
+  findings — re-verified by running the real build** (`./mvnw -o clean verify`, 2026-07-22,
+  against the `hugmesh-parent` 2.8.0 / `hugmesh-build-config` 0.5.0 this module now resolves
+  post-rebrand). This module's historical "SpotBugs fail mode is a no-op" framing is now
+  **stale**: `hugmesh-parent` 2.8.0 switched the plugin config from the silently-ignored
+  `failOnViolation` parameter to the real one, `failOnError=true`, so `spotbugs:check` now
+  actually fails the build — `verify` ends `BUILD FAILURE` with **8 Medium `EI_EXPOSE_REP2`**
+  findings (`AccountStore` ×3, `BffStoredMfaFactorVerifier` ×4, `WebAuthnChallengeStore` ×1),
+  even though `clean test`/`clean package` still succeed (PMD and Checkstyle both still run
+  clean, 0 violations). `hugmesh-build-config` 0.4.0/0.5.0 already fixed most of this class of
+  false positive — Spring constructor-injection findings are now suppressed by CLASS-NAME
+  suffix (`*Service`/`*Controller`/`*Repository`/`*Client`/`*Config`/`*Handler`/`*Filter`/
+  `*Resolver`), not just layer-package name — which is why the pre-#35 count of 20 findings
+  (`account/`, `casdoor/`, `mfa/`, `username/`) is already down to 8: PR #35 fixed the two
+  genuine `Account.roles` findings, and the exclude filter's suffix list now quietly covers
+  everything else in `casdoor/`/`username/`/most of `mfa/`. The 8 that remain are the same
+  kind of Spring-injection false positive, just on classes named `*Store`/`*Verifier` — a
+  suffix the exclude filter doesn't cover. Fixing this needs either a `hugmesh-build-config`
+  filter change (out of scope here) or a rename/refactor of `AccountStore` /
+  `BffStoredMfaFactorVerifier` / `WebAuthnChallengeStore` to a covered suffix — not done in
+  this docs pass.
 
 ## Roadmap
 This jar advances in lockstep with the platform auth roadmap; the next increments are:
@@ -271,5 +281,6 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the HugMesh current-state brief and the repo's landed code at
-auth-core 2.3.4 (2026-07-15, through the `usernameOf`/`idFor` identity-fold fix in PR #33).
-Features beyond the brief and the actual code are intentionally not invented here._
+auth-core 2.4.0 (2026-07-19, through the Snapdragon→HugMesh rebrand in PR #36), re-verified
+against a real `./mvnw` build on 2026-07-22. Features beyond the brief and the actual code are
+intentionally not invented here._
