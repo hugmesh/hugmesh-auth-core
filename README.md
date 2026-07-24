@@ -108,7 +108,7 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
 `EI_EXPOSE_REP2` findings.
 
 ## Current State
-- **Version 2.4.0** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.4.1** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
   `hugmesh-parent` (metapom) **2.8.0** (which runs **PMD + Checkstyle + SpotBugs** during
   `verify` and pins **testcontainers 2.0.5**; PMD and Checkstyle fail on violation, and — as
@@ -184,9 +184,13 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
   user-bff's `FederationHttpClientSsl` (same `hugmesh.mtls.client.*` flag/property names).
   Default OFF; degrades to plain HTTP with a warning if the gate is on but the keystore file
   is absent, so a misconfigured pod never crash-loops on boot.
-- **Reserved-username canonical sync (2.3.3)**: `ReservedNames.RESERVED` carries the full
-  77-label canonical set (`reserved/ReservedNames.java`), kept byte-for-byte in sync with the
-  independent copies in `hugmesh-federation-api` and `hugmesh-actions`.
+- **Reserved-username canonical sync (2.3.3, extended in 2.4.1)**: `ReservedNames.RESERVED`
+  carries the full 82-label canonical set (`reserved/ReservedNames.java`), kept byte-for-byte
+  in sync with the independent copies in `hugmesh-federation-api` and `hugmesh-actions`.
+  2.4.1 reconciled canonical `reserved-prefixes.yaml` revisions 7-9: `hmdm` + `attest`
+  (Headwind MDM / AttestationServer tailnet superadmin-gateway route prefixes) and
+  `character-forge` + `games-character-forge` + `games-shadows-of-the-net` (the Character
+  Forge 3D fe-gateway route + the hugmesh.games wasm slugs of the XR-chat track).
 - **Identity-fold correctness fixes (2.3.4)**: `CasdoorAdminClient#usernameOf` now strips a
   trailing `@...` suffix for EVERY provider (previously only `google`), closing a bug where a
   native `casdoor:` account whose handle is email-shaped (`casdoor:alice@gmail.com`) minted an
@@ -281,6 +285,7 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the HugMesh current-state brief and the repo's landed code at
-auth-core 2.4.0 (2026-07-19, through the Snapdragon→HugMesh rebrand in PR #36), re-verified
-against a real `./mvnw` build on 2026-07-22. Features beyond the brief and the actual code are
-intentionally not invented here._
+auth-core 2.4.1 (2026-07-23, through the Snapdragon→HugMesh rebrand in PR #36 and the
+canonical reserved-prefix revision 7-9 sync), re-verified against a real `./mvnw` build on
+2026-07-22. Features beyond the brief and the actual code are intentionally not invented
+here._

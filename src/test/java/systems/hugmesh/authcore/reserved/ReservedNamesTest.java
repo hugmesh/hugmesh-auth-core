@@ -40,10 +40,10 @@ class ReservedNamesTest {
     }
 
     @Test
-    void reservedSetIsExactlyTheCanonical77Labels() {
+    void reservedSetIsExactlyTheCanonical82Labels() {
         // Guards against silent drift from the canonical reserved-prefixes.yaml
         // (and the RESERVED[_LABELS] copies in hugmesh-federation-api /
-        // hugmesh-actions): the count must stay 77 (the union of gateway
+        // hugmesh-actions): the count must stay 82 (the union of gateway
         // prefixes, reserved subdomains, the hugmesh.games app prefixes, and the
         // defensive web/infra names — incl. the federated 'forum'/'phpbb' forum
         // labels). The neutral '@system' notification sender (Notifications PR3) is
@@ -58,7 +58,13 @@ class ReservedNamesTest {
         // `character-studio`, `v1` (revision 4), `index.html`, `favicon.ico`,
         // `importmap.json`, `remoteentry.json` (revision 5 fe webroot filenames),
         // and `ai` (revision 6 edge-AI host).
-        assertThat(ReservedNames.RESERVED).hasSize(77);
+        // 77 -> 82: reconciled with canonical revisions 7-9 — added `hmdm` +
+        // `attest` (revisions 7/8: the Headwind MDM + AttestationServer
+        // tailnet-only superadmin-gateway route prefixes) and `character-forge` +
+        // `games-character-forge` + `games-shadows-of-the-net` (revision 9: the
+        // Character Forge 3D fe-gateway route + the hugmesh.games wasm slugs of
+        // the XR-chat track).
+        assertThat(ReservedNames.RESERVED).hasSize(82);
     }
 
     @ParameterizedTest
@@ -101,6 +107,48 @@ class ReservedNamesTest {
         // case-insensitive; isReserved() lower-cases the candidate first).
         assertThat(ReservedNames.isReserved(label)).isTrue();
         assertThat(ReservedNames.RESERVED).contains(label);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "hmdm", "attest", "character-forge", "games-character-forge",
+            "games-shadows-of-the-net"})
+    void everyCanonicalRevision7To9LabelIsReserved(String label) {
+        // The 5 labels added to reconcile this copy with canonical revisions 7-9
+        // of reserved-prefixes.yaml: `hmdm` (Headwind MDM /hmdm/manage/** +
+        // /hmdm/rest/**) and `attest` (AttestationServer /attest/auditor/** +
+        // /attest/api/**) — both tailnet-only superadmin-gateway route prefixes,
+        // revisions 7/8; `character-forge` (the Character Forge 3D micro-frontend
+        // /character-forge/** fe-gateway route, BFF at /bff/character-forge/**)
+        // plus the games-side wasm slugs `games-character-forge` and
+        // `games-shadows-of-the-net` — revision 9 (the XR-chat track).
+        assertThat(ReservedNames.isReserved(label)).isTrue();
+        assertThat(ReservedNames.RESERVED).contains(label);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "HMDM", "Attest", "  character-forge  ", "Character-Forge",
+            "character_forge", "character forge", "Games-Shadows-Of-The-Net"})
+    void revision7To9LabelsSurviveCaseTrimAndSeparatorTricks(String label) {
+        // Same normalisation guarantees the older labels get: case-insensitive,
+        // trimmed, and separator variants fold onto the reserved label (the
+        // normalize() slug collapse turns '_'/' ' runs into '-').
+        assertThat(ReservedNames.isReserved(label)).isTrue();
+    }
+
+    @Test
+    void characterForgeAdjacentHandles_areNotReserved() {
+        // Exact-label semantics: adjacent handles that do NOT normalise onto a
+        // reserved label stay registrable — proving the rev 7-9 additions did
+        // not widen beyond the canonical labels. NOTE: 'characterforge' IS
+        // caught (by design) via the dash-collapsed compare in isReserved(),
+        // same as 'wellknown' → 'well-known'.
+        assertThat(ReservedNames.isReserved("character-forger")).isFalse();
+        assertThat(ReservedNames.isReserved("forge")).isFalse();
+        assertThat(ReservedNames.isReserved("hmdms")).isFalse();
+        assertThat(ReservedNames.isReserved("attestation")).isFalse();
+        assertThat(ReservedNames.isReserved("shadows-of-the-net")).isFalse();
     }
 
     @Test
@@ -149,7 +197,7 @@ class ReservedNamesTest {
     @Test
     void systemLivesInTheSeparatePlatformInternalSet_notTheCanonicalCrossRepoSet() {
         // 'system' is reserved via the SEPARATE platform-internal set, NOT the canonical
-        // RESERVED block — so it does NOT change the cross-repo size-77 contract below and
+        // RESERVED block — so it does NOT change the cross-repo size-82 contract below and
         // requires no byte-for-byte edit to the sibling ReservedNames copies.
         assertThat(ReservedNames.RESERVED).doesNotContain("system");
     }

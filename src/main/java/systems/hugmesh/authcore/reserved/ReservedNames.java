@@ -58,10 +58,20 @@ public final class ReservedNames {
             // superadmin: TAILNET superadmin App-Store console route prefix
             // (/superadmin/appstore/** on the superadmin-gateway)
             "superadmin",
+            // hmdm / attest: the Headwind MDM (/hmdm/manage/**, /hmdm/rest/**)
+            // and AttestationServer (/attest/auditor/**, /attest/api/**)
+            // tailnet-only superadmin-gateway route prefixes (canonical
+            // reserved-prefixes.yaml rev 7/8 — the canonical YAML instructed
+            // the app-repo copies to add these when the routes shipped)
+            "hmdm", "attest",
             // character-studio: the Character Studio (VN) micro-frontend remote,
             // served at /character-studio/** on the fe-gateway
             // (apps/20-gateway-fe.yaml route[character-studio-ui].path)
             "character-studio",
+            // character-forge: the Character Forge (3D) micro-frontend remote,
+            // served at /character-forge/** on the fe-gateway (BFF at
+            // /bff/character-forge/**) — canonical reserved-prefixes.yaml rev 9
+            "character-forge",
             // be-gateway route prefixes + publicly-routable homeserver surfaces
             // (_synapse: /_synapse/** Matrix Synapse-compat; media: /media/** Mastodon)
             "api", "_matrix", "matrix", "_synapse", "media", "mastodon", "pleroma",
@@ -91,7 +101,7 @@ public final class ReservedNames {
             "index.html", "favicon.ico", "importmap.json", "remoteentry.json",
             // NOTE: the neutral @system notification SENDER (Notifications PR3) is reserved
             // via the SEPARATE RESERVED_PLATFORM_INTERNAL set below — NOT this canonical
-            // cross-repo RESERVED block — so it stays out of the size-77 canonical-sync
+            // cross-repo RESERVED block — so it stays out of the size-82 canonical-sync
             // contract while isReserved on the @system handle still fails closed.
             // (Do NOT quote that handle as a string literal here: the canonical
             // reserved-prefix validator harvests every quoted token inside this
@@ -107,13 +117,18 @@ public final class ReservedNames {
             "api-docs", "docs", "_remotes", "producer-registration",
             "registration", "wasm-fragment", "games-dodecahedron",
             "games-rpg-maker", "games-three-wizards", "games-vn-maker",
-            "games-instances-console");
+            "games-instances-console",
+            // games-character-forge / games-shadows-of-the-net: the 3D character
+            // maker + the XR chat room published into hugmesh.games as wasm
+            // games (nginx /_remotes/<slug>/ blocks, existing games-* pattern) —
+            // canonical reserved-prefixes.yaml rev 9
+            "games-character-forge", "games-shadows-of-the-net");
 
     /**
      * PLATFORM-INTERNAL reserved labels — names the PLATFORM ITSELF mints and which
      * therefore must never be claimable by a human-provisioned identity, but which are
      * NOT part of the cross-repo {@link #RESERVED} canonical-sync contract (so adding one
-     * here does NOT change the size-77 canonical guard, nor require a byte-for-byte edit
+     * here does NOT change the size-82 canonical guard, nor require a byte-for-byte edit
      * to the four sibling {@code ReservedNames} copies).
      *
      * <p>{@code system} is the per-domain neutral {@code @system} notifications sender
