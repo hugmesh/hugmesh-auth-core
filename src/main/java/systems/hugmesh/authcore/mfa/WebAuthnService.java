@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.security.SecureRandom;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -46,6 +47,20 @@ import java.util.Set;
 public class WebAuthnService {
 
     private static final Logger log = LoggerFactory.getLogger(WebAuthnService.class);
+
+    /**
+     * Server-challenge size in bytes. The W3C floor is 16; we draw 32 so the challenge is a
+     * full 256 bits and matches the digest width the assertion is signed over.
+     */
+    static final int CHALLENGE_BYTES = 32;
+
+    /**
+     * The challenge CSPRNG. {@link SecureRandom} is thread-safe, and the no-arg constructor
+     * takes the platform's strong default (on Linux, a non-blocking kernel entropy source), so
+     * a shared instance is both correct and free of the blocking risk {@code getInstanceStrong()}
+     * would add on a freshly booted node.
+     */
+    private static final SecureRandom CHALLENGE_RNG = new SecureRandom();
 
     private final WebAuthnManager manager;
     private final ObjectConverter objectConverter;
@@ -91,10 +106,24 @@ public class WebAuthnService {
         return rpName;
     }
 
-    /** A fresh base64url-encoded server challenge (32 bytes) the caller binds to the session. */
+    /**
+     * A fresh base64url-encoded server challenge the caller binds to the session:
+     * {@value #CHALLENGE_BYTES} bytes drawn from a {@link SecureRandom}, i.e. a full
+     * {@code CHALLENGE_BYTES * 8} bits of entropy.
+     *
+     * <p>NOT {@code new DefaultChallenge()}. webauthn4j's no-arg constructor is
+     * {@code UUID.randomUUID()} packed into a 16-byte buffer, so it carries 122 usable bits —
+     * RFC 4122 fixes the version nibble and the variant bits — and it draws from the UUID
+     * generator rather than a challenge-sized CSPRNG. That clears the W3C "SHOULD be at least
+     * 16 bytes" floor, so this is a hardening rather than a fix for a live hole, but it also
+     * silently contradicted this javadoc, which claimed 32 bytes while the code produced 16.
+     * {@code WebAuthnServiceTest} pins the size and the CSPRNG-vs-UUID distinction so the two
+     * cannot drift apart again.
+     */
     public String newChallengeBase64Url() {
-        Challenge challenge = new DefaultChallenge();
-        return Base64UrlUtil.encodeToString(challenge.getValue());
+        byte[] raw = new byte[CHALLENGE_BYTES];
+        CHALLENGE_RNG.nextBytes(raw);
+        return Base64UrlUtil.encodeToString(raw);
     }
 
     /**

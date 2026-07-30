@@ -50,8 +50,11 @@ CREATE TABLE IF NOT EXISTS webauthn_credential (
 CREATE TABLE IF NOT EXISTS webauthn_challenge (
     id            VARCHAR(36) PRIMARY KEY DEFAULT (gen_random_uuid())::text,
     owner_subject VARCHAR(400) NOT NULL,
-    challenge     TEXT NOT NULL,
-    ceremony_type VARCHAR(32) NOT NULL,
+    -- Widths below are the PRODUCTION widths from changeset 152, not looser stand-ins: a mirror
+    -- that is more permissive than production cannot fail on a value production would reject.
+    -- challenge holds base64url of CHALLENGE_BYTES (32 -> 43 chars), well inside 512.
+    challenge     VARCHAR(512) NOT NULL,
+    ceremony_type VARCHAR(16) NOT NULL,
     expires_at    TIMESTAMPTZ NOT NULL,
     used          BOOLEAN NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()

@@ -48,6 +48,29 @@ class WebAuthnChallengeRepositoryPostgresTest extends PostgresTestSupport {
     }
 
     @Test
+    void aRealServiceIssuedChallengeFitsTheProductionColumnWidth() {
+        // The other cases here insert "chal-1"/"c1" — 2-6 chars — so they exercise the ROW but
+        // never the COLUMN WIDTH. Narrowing mfa-schema.sql's `challenge` to VARCHAR(10) left
+        // all of them green, which means nothing in this suite proved a production-sized value
+        // round-trips. base64url of WebAuthnService.CHALLENGE_BYTES (32) is 43 chars; changeset
+        // 152 declares varchar(512). This case inserts what the service ACTUALLY issues, so a
+        // challenge widened past the column (or a column narrowed under it) fails here instead
+        // of at runtime on the first enrollment.
+        String realChallenge = new WebAuthnService("hugmesh.systems", "https://admin.hugmesh.systems", "HugMesh")
+                .newChallengeBase64Url();
+        assertThat(realChallenge).hasSize(43);
+
+        Instant now = Instant.now();
+        String id = repo.insertReturningId("google:frank", realChallenge, REGISTER,
+                now.plus(Duration.ofMinutes(5)), false, now).block();
+
+        WebAuthnChallengeRow row = repo.findById(id).block();
+        assertThat(row.challenge())
+                .as("stored value must survive the column verbatim — no silent truncation")
+                .isEqualTo(realChallenge);
+    }
+
+    @Test
     void consume_isOneTime_andRejectsExpired_andIsOwnerCeremonyScoped() {
         Instant now = Instant.now();
         String id = repo.insertReturningId("google:bob", "chal-2", REGISTER,

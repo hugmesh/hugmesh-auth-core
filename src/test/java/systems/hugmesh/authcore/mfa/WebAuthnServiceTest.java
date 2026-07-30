@@ -201,21 +201,43 @@ class WebAuthnServiceTest {
     }
 
     @Test
-    void newChallenge_isCurrently16UuidDerivedBytes_notThe32ItsJavadocClaims() {
-        // TRIPWIRE for a known doc-vs-code drift, NOT an endorsement of the current size.
-        // WebAuthnService.java:94 documents "(32 bytes)" but :96 calls `new DefaultChallenge()`,
-        // and webauthn4j 0.31.7's no-arg DefaultChallenge is
+    void newChallenge_isExactly32SecureRandomBytes_notTheUuidDerived16() {
+        // Pins the CHALLENGE_BYTES draw. The predecessor of this test recorded the opposite
+        // state: the javadoc claimed 32 bytes while the code called `new DefaultChallenge()`,
+        // whose no-arg form in webauthn4j 0.31.7 is
         //     ByteBuffer.allocate(16).putLong(uuid.getMostSignificantBits())
         //                            .putLong(uuid.getLeastSignificantBits()).array()
-        // i.e. 16 bytes carrying a random UUID, so 122 bits of entropy with 6 bits FIXED by
-        // RFC 4122 (the v4 version nibble and the variant bits) — not 128, and not 256.
-        // Still above the spec floor, so this is drift + a missed hardening, not a live hole.
-        // When WebAuthnService switches to a 32-byte SecureRandom draw, THIS test is the one that
-        // must be updated (and the javadoc becomes true).
+        // — 16 bytes carrying a random UUID, so 122 usable bits with 6 FIXED by RFC 4122.
+        // That cleared the W3C 16-byte floor, so the switch is a hardening, not a fix for a
+        // live hole; this assertion is what stops a revert to the UUID form going unnoticed.
         byte[] raw = Base64UrlUtil.decode(service.newChallengeBase64Url());
-        assertThat(raw).hasSize(16);
-        assertThat(raw[6] & 0xf0).as("UUID v4 version nibble is fixed, not random").isEqualTo(0x40);
-        assertThat(raw[8] & 0xc0).as("UUID variant bits are fixed, not random").isEqualTo(0x80);
+        assertThat(raw).hasSize(WebAuthnService.CHALLENGE_BYTES);
+        assertThat(WebAuthnService.CHALLENGE_BYTES)
+                .as("32 bytes = 256 bits; also keeps the W3C >=16 floor true by construction")
+                .isEqualTo(32);
+    }
+
+    @Test
+    void newChallenge_carriesNoRfc4122StructureAcrossManyDraws() {
+        // Size alone would still pass if someone concatenated two UUIDs to reach 32 bytes, which
+        // would reintroduce the fixed version/variant bits. A UUID-derived challenge holds
+        // raw[6]&0xf0 == 0x40 and raw[8]&0xc0 == 0x80 on EVERY draw; a CSPRNG hits each only
+        // ~1/16 and ~1/4 of the time. Over 256 draws, "always" and "sometimes" are not
+        // confusable: the false-failure probability here is (15/16 * 3/4)^-… vanishing, while a
+        // UUID-shaped source fails on the very first draw.
+        int versionNibbleMatches = 0;
+        int variantBitsMatches = 0;
+        for (int i = 0; i < 256; i++) {
+            byte[] raw = Base64UrlUtil.decode(service.newChallengeBase64Url());
+            if ((raw[6] & 0xf0) == 0x40) versionNibbleMatches++;
+            if ((raw[8] & 0xc0) == 0x80) variantBitsMatches++;
+        }
+        assertThat(versionNibbleMatches)
+                .as("RFC 4122 v4 version nibble present in every draw => UUID-derived, not CSPRNG")
+                .isLessThan(256);
+        assertThat(variantBitsMatches)
+                .as("RFC 4122 variant bits present in every draw => UUID-derived, not CSPRNG")
+                .isLessThan(256);
     }
 
     @Test
