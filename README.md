@@ -85,8 +85,9 @@ auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
 - ✅ `casdoor/` — Casdoor-admin client/config, OIDC token-exchange client (`OidcExchangeClient`,
   optionally routed through gated outbound mTLS via `OidcExchangeClientSsl`), BFF-custody
   cipher (`BffCustodyCipher`), MFA challenge/step-up services, raw-JWT refresh.
-- ✅ `mfa/` — TOTP, WebAuthn (webauthn4j), recovery codes, enrollment, secret cipher, and the
-  R2DBC factor/credential/challenge rows + repositories.
+- ✅ `mfa/` — TOTP, WebAuthn (webauthn4j), recovery codes, enrollment, secret cipher, the
+  R2DBC factor/credential/challenge rows + repositories, and `MfaPreconditionBootGuard`
+  (see **MFA precondition startup check** below).
 - ✅ `config/` — session-cookie + internal-token web filters, the internal-surface boot guard,
   and `BffCookieAuthenticationWebFilter` (bridges an opaque `bff_` session into a real Spring
   Security `Authentication` for a consumer's own `hasAnyRole()`/`.authenticated()` gates —
@@ -95,13 +96,79 @@ auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
 
+### MFA precondition startup check
+
+`mfa/MfaPreconditionBootGuard` detects the MFA configurations that are silently broken or silently
+unrecoverable, and by **default reports them as one loud `WARN` and lets the application start**.
+It aborts the boot (throwing from `afterSingletonsInstantiated`, the same mechanism as
+`config/InternalSurfaceBootGuard`) **only** when an operator explicitly opts in with
+`app.mfa.preconditions.fail-fast=true` (env `APP_MFA_PRECONDITIONS_FAIL_FAST`, default `false`).
+
+| Precondition | Reported when | Consequence if left unfixed |
+| --- | --- | --- |
+| `app.mfa.factor-key` (env `APP_MFA_FACTOR_KEY`) | MFA enabled and no usable key | The key gates the TOTP cipher **and** the recovery-code HMAC, but **not** WebAuthn — so MFA arms as WebAuthn-only with TOTP enroll and recovery-code generation both 503ing, and a user who loses their passkey is locked out with no self-service way back in (an operator must clear their factors by hand). |
+| `app.mfa.webauthn.rp-id` (env `APP_MFA_WEBAUTHN_RP_ID`) | MFA enabled, **no dev profile**, and the RP ID is absent or a loopback host | It silently defaults to `localhost`, so every passkey registers against the wrong Relying Party and no ceremony can ever succeed. |
+| `app.mfa.webauthn.origins` (env `APP_MFA_WEBAUTHN_ORIGINS`) | MFA enabled, **no dev profile**, and every allowlisted origin is loopback | It silently defaults to `https://localhost`, so the ceremony rejects every real browser origin. |
+
+**Why WARN-by-default and not fail-fast-by-default.** These are not hypothetical states — they are
+*tolerated* states in the shipped deployment, so making them fatal by default would convert a
+degradation into an outage:
+
+- hugmesh-generator `specs/cluster/manifests/admin-bff-api/deployment.yaml` sets
+  `APP_CASDOOR_MFA_ENABLED: "true"` (MFA is **armed** in-cluster) and sources `APP_MFA_FACTOR_KEY`
+  from an External-Secrets `secretKeyRef` marked `optional: true`, with the explicit comment "*so
+  the pod still starts if the Secret is somehow absent … but the pod itself boots*".
+- The local compose stack (`tests/stack/compose.local.yaml`) runs MFA on with **neither** WebAuthn
+  property set, and its `dev` profile is only the `ADMIN_BFF_PROFILES` default.
+
+admin-bff-api is the **only** consumer that component-scans `systems.hugmesh.authcore` (its
+`@SpringBootApplication(scanBasePackages = …)`), and it is the admin/superadmin control plane plus
+the gateway's cookie→JWT `POST /bff/internal/session/exchange` leg. Throwing on an absent ESO
+secret would therefore CrashLoopBackOff that whole plane on a fresh cluster bring-up, on a new
+brand/tenant where `gen-cluster-secrets` was not re-run, or on a Vault path typo — locking
+operators out of the plane they would use to fix it. So the default is to *tell* them, precisely
+and unmissably (`*** MFA MISCONFIGURED ***`, every property and env var named, the consequence
+spelled out, and the opt-in named), and keep serving. Turning it fatal is a per-deployment
+decision, and should be sequenced with dropping `optional: true` from that `secretKeyRef`.
+
+No actuator health indicator is offered: this module has **no** `spring-boot-actuator` dependency
+and no health-contributor precedent, and a shared auth jar is the wrong place to acquire one.
+
+Two test classes cover it: `MfaPreconditionBootGuardTest` (the decision logic, including a
+`ListAppender` capture so "it WARNs loudly" is a real assertion rather than a claim) and
+`MfaPreconditionBootGuardContextTest` (a **real** `AnnotationConfigApplicationContext.refresh()`,
+because whether a pod comes up is decided by `refresh()` completing, not by a method call). The
+version is **not** bumped for this class, so no consumer sees it until a release + a consumer
+dependency repoint — sequence that with dropping `optional: true` from the `admin-bff-mfa`
+`secretKeyRef`, so the missing-secret case surfaces at the Kubernetes layer with a clear reason
+rather than as a running-but-degraded pod.
+
+Every check is behind `app.casdoor.mfa.enabled` (**default `false`** in every consumer's
+`application.yml`), so an MFA-off deployment stays completely silent — that invariant is the first
+thing the test class asserts, together with the fact that arming the opt-in while MFA is off is
+still a no-op. The bean is also absent under the `test` profile.
+
+**Dev detection** is "`dev` or `test` is in `Environment.getActiveProfiles()`" — exactly the profile
+names in `InternalSurfaceBootGuard`'s `@Profile("!dev & !test")` predicate, so this library has one
+dev rule, not two (a test asserts the set is exactly those two; `local` is deliberately **not**
+included, because no manifest, compose service or `application-*.yml` in this fleet activates such
+a profile). The only difference is bean *presence*: this bean is `@Profile("!test")` rather than
+`!dev & !test`, because it still has something useful to say under `dev` — the local compose stack
+runs `SPRING_PROFILES_ACTIVE=casdoor,dev` and sets no RP ID, so it gets a dev-specific WARN and is
+never counted as a problem (not even under the opt-in, so arming fail-fast fleet-wide cannot break
+a local stack); the cluster runs `casdoor,clickhouse` and does set a real RP ID. An unprofiled
+deployment is treated as NOT dev — the safe direction for a passkey RP ID. mDNS `*.local` hosts are
+deliberately **not** classified as loopback (a LAN node may legitimately be `foo.local`); RFC-6761
+`*.localhost` is.
+
 Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.8.0 + hugmesh-commons 2.1.0
 from `~/.m2`) — runs the full test suite as part of `package`. A handful of MFA-repo data-slice
 tests need a real Postgres via Testcontainers, so a local run also needs Docker (or `-Dtest=
 '!*PostgresTest'` to skip just those). `./mvnw -o clean verify` additionally runs PMD +
 Checkstyle + SpotBugs (see Current State / Known Gaps for their actual current enforcement
-status). Re-verified 2026-07-22: `clean test` with Docker available — 318/318 tests green
-(303/303 without Docker, skipping the Postgres slices), 0 Checkstyle/PMD violations, BUILD
+status). Re-verified 2026-07-30: `clean test` with Docker available — the **whole** suite green
+(`Failures: 0, Errors: 0, Skipped: 0`; without Docker the Postgres slices are the only thing that
+drops out), 0 Checkstyle/PMD violations, BUILD
 SUCCESS — but `clean verify` is currently **BUILD FAILURE**: the `hugmesh-parent` 2.8.0 bump
 fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the historical
 2.7.0 config used — see Known Gaps), so `verify` now genuinely fails on 8 real
