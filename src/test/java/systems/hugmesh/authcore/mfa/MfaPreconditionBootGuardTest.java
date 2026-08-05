@@ -37,11 +37,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <ol>
  *   <li>{@link MfaOff#bootsFine_whenMfaDisabled_evenWithNothingConfigured()} — MFA off must never
  *       be able to acquire a new startup failure from this class.</li>
- *   <li>{@link DefaultIsWarnNotFail} — MFA ON with unmet preconditions must ALSO still start,
- *       because that is a tolerated degraded state in the shipped manifests
- *       ({@code APP_CASDOOR_MFA_ENABLED: "true"} + an {@code optional: true} factor-key
- *       {@code secretKeyRef}), and admin-bff-api — the only consumer that scans this package — is
- *       the admin control plane. Crashing it would be worse than the degradation it reports.</li>
+ *   <li>{@link DefaultIsWarnNotFail} — MFA ON with unmet preconditions must ALSO still start.
+ *       That state is REACHABLE ({@code APP_CASDOOR_MFA_ENABLED: "true"} with an empty factor
+ *       key: historically an absent {@code optional: true} Secret; since the 2.4.2 release chain
+ *       the in-cluster ref is REQUIRED, so this arises from a present-but-empty Secret value,
+ *       compose/bare-metal runs, or a pre-tightening manifest), and admin-bff-api — the only
+ *       consumer that scans this package — is the admin control plane. Crashing it would be
+ *       worse than the degradation it reports.</li>
  * </ol>
  * The hard failure is reachable only through the explicit
  * {@code app.mfa.preconditions.fail-fast} opt-in, covered by {@link FailFastOptIn}.
@@ -149,8 +151,10 @@ class MfaPreconditionBootGuardTest {
         void startsAnyway_andWarns_inTheExactLiveClusterDegradedState() {
             // specs/cluster/manifests/admin-bff-api/deployment.yaml: APP_CASDOOR_MFA_ENABLED=true,
             // RP_ID/ORIGINS set to the real admin host, profiles casdoor,clickhouse (NOT dev), and
-            // APP_MFA_FACTOR_KEY from a secretKeyRef with optional:true => absent Secret means an
-            // EMPTY key. The manifest comment promises "the pod itself boots". It must keep booting.
+            // APP_MFA_FACTOR_KEY resolving EMPTY. The in-cluster ref is REQUIRED since the 2.4.2
+            // release chain (an absent Secret is the scheduler's problem now), but an empty key
+            // still arrives via a present-but-blank Secret value or a pre-tightening manifest —
+            // and the pod must keep booting through it.
             MfaPreconditionBootGuard g = guard(true, "", "admin.hugmesh.systems",
                     "https://admin.hugmesh.systems", false);
             assertThatCode(g::afterSingletonsInstantiated).doesNotThrowAnyException();

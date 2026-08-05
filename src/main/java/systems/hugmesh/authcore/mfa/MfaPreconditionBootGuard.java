@@ -23,13 +23,16 @@ import java.util.Set;
  * operator opts in via {@code app.mfa.preconditions.fail-fast=true}.
  *
  * <h3>Why WARN-by-default and not fail-fast-by-default</h3>
- * "MFA armed with no factor key" is not a hypothetical — it is a DELIBERATELY TOLERATED degraded
- * state in the shipped deployment. hugmesh-generator
- * {@code specs/cluster/manifests/admin-bff-api/deployment.yaml} sets
+ * "MFA armed with no factor key" is not a hypothetical — it is a REACHABLE degraded state.
+ * hugmesh-generator {@code specs/cluster/manifests/admin-bff-api/deployment.yaml} sets
  * {@code APP_CASDOOR_MFA_ENABLED: "true"} and sources {@code APP_MFA_FACTOR_KEY} from an
- * External-Secrets {@code secretKeyRef} marked {@code optional: true}, with the comment
- * "<i>so the pod still starts if the Secret is somehow absent (cipher stays inert and TOTP enroll
- * refuses, but the pod itself boots)</i>". The same is true of the WebAuthn Relying Party: the
+ * External-Secrets {@code secretKeyRef}. As of the 2.4.2 release chain that ref is REQUIRED
+ * (generator {@code fix/mfa-factor-key-required}): in-cluster, a fully absent Secret is now a
+ * {@code CreateContainerConfigError} the scheduler reports before this guard ever runs.
+ * Historically the ref was {@code optional: true} ("<i>so the pod still starts if the Secret is
+ * somehow absent</i>"), and the degraded state remains reachable everywhere the scheduler cannot
+ * front it: a Secret PRESENT with an empty/blank value, compose, bare-metal runs, and any cluster
+ * still applying the pre-tightening manifest. The same is true of the WebAuthn Relying Party: the
  * local compose stack runs MFA on with NEITHER {@code rp-id} nor {@code origins} set, and its
  * {@code dev} profile is only a DEFAULT ({@code ADMIN_BFF_PROFILES}) that an operator may drop.
  *

@@ -19,11 +19,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link MfaPreconditionBootGuardTest} covers the decision logic; this class covers the thing that
  * actually decides whether a pod comes up: whether {@code refresh()} completes.
  *
- * <p>{@link #realContextStillRefreshes_whenMfaIsOnAndTheFactorKeyIsAbsent()} is the important one.
- * It is the exact live state of admin-bff-api in-cluster (MFA armed, factor key from an
- * {@code optional: true} ESO {@code secretKeyRef} that has not synced) and it MUST refresh, because
- * admin-bff-api is the admin/superadmin control plane — a throw here is a CrashLoopBackOff of the
- * plane an operator would use to fix the very thing being reported.
+ * <p>{@link #realContextStillRefreshes_whenMfaIsOnAndTheFactorKeyIsAbsent()} is the important one:
+ * MFA armed with the factor key resolving empty. In-cluster the ESO {@code secretKeyRef} is
+ * REQUIRED since the 2.4.2 release chain (a fully absent Secret is a scheduler-level
+ * {@code CreateContainerConfigError} before this code runs), but the state stays reachable — a
+ * Secret present with a blank value, compose/bare-metal, a pre-tightening manifest — and it MUST
+ * refresh, because admin-bff-api is the admin/superadmin control plane: a throw here is a
+ * CrashLoopBackOff of the plane an operator would use to fix the very thing being reported.
  */
 class MfaPreconditionBootGuardContextTest {
 
@@ -63,8 +65,9 @@ class MfaPreconditionBootGuardContextTest {
     @Test
     @DisplayName("THE CRASH-LOOP REGRESSION: MFA on, no factor key, cluster profiles — REFRESHES")
     void realContextStillRefreshes_whenMfaIsOnAndTheFactorKeyIsAbsent() {
-        // admin-bff-api in-cluster, with the optional ESO Secret absent: APP_CASDOOR_MFA_ENABLED
-        // true, RP-ID/origins set from the manifest, APP_MFA_FACTOR_KEY resolving to empty.
+        // admin-bff-api with MFA armed and APP_MFA_FACTOR_KEY resolving to empty (a blank
+        // Secret value, compose, or a pre-tightening manifest; the required in-cluster ref
+        // makes full ABSENCE a scheduler-level failure since the 2.4.2 release chain).
         try (AnnotationConfigApplicationContext c = ctx(Map.of(
                 "app.casdoor.mfa.enabled", "true",
                 "app.mfa.webauthn.rp-id", "admin.hugmesh.systems",

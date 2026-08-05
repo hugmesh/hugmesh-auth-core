@@ -116,8 +116,13 @@ degradation into an outage:
 
 - hugmesh-generator `specs/cluster/manifests/admin-bff-api/deployment.yaml` sets
   `APP_CASDOOR_MFA_ENABLED: "true"` (MFA is **armed** in-cluster) and sources `APP_MFA_FACTOR_KEY`
-  from an External-Secrets `secretKeyRef` marked `optional: true`, with the explicit comment "*so
-  the pod still starts if the Secret is somehow absent … but the pod itself boots*".
+  from an External-Secrets `secretKeyRef`. Historically that ref was marked `optional: true`
+  ("*so the pod still starts if the Secret is somehow absent*"); the 2.4.2 release chain drops
+  that (generator `fix/mfa-factor-key-required`), so in-cluster a genuinely absent Secret now
+  blocks pod start at the Kubernetes layer (`CreateContainerConfigError`) before this guard ever
+  runs. The guard still matters for every OTHER misconfiguration shape — key present but the
+  WebAuthn properties absent, compose, bare-metal runs — which is exactly the degraded-but-running
+  band below.
 - The local compose stack (`tests/stack/compose.local.yaml`) runs MFA on with **neither** WebAuthn
   property set, and its `dev` profile is only the `ADMIN_BFF_PROFILES` default.
 
@@ -129,7 +134,9 @@ brand/tenant where `gen-cluster-secrets` was not re-run, or on a Vault path typo
 operators out of the plane they would use to fix it. So the default is to *tell* them, precisely
 and unmissably (`*** MFA MISCONFIGURED ***`, every property and env var named, the consequence
 spelled out, and the opt-in named), and keep serving. Turning it fatal is a per-deployment
-decision, and should be sequenced with dropping `optional: true` from that `secretKeyRef`.
+decision; the k8s-layer half of the sequencing — dropping `optional: true` from that
+`secretKeyRef` — ships in the same release chain as 2.4.2, so the fully-absent-Secret case is
+already fronted by the scheduler in-cluster.
 
 No actuator health indicator is offered: this module has **no** `spring-boot-actuator` dependency
 and no health-contributor precedent, and a shared auth jar is the wrong place to acquire one.
@@ -138,10 +145,17 @@ Two test classes cover it: `MfaPreconditionBootGuardTest` (the decision logic, i
 `ListAppender` capture so "it WARNs loudly" is a real assertion rather than a claim) and
 `MfaPreconditionBootGuardContextTest` (a **real** `AnnotationConfigApplicationContext.refresh()`,
 because whether a pod comes up is decided by `refresh()` completing, not by a method call). The
-version is **not** bumped for this class, so no consumer sees it until a release + a consumer
-dependency repoint — sequence that with dropping `optional: true` from the `admin-bff-mfa`
-`secretKeyRef`, so the missing-secret case surfaces at the Kubernetes layer with a clear reason
-rather than as a running-but-degraded pod.
+class is **released in 2.4.2** — the version was bumped precisely because the GitLab
+`deploy:maven` job re-runs `deploy` at whatever version the pom holds on every `main` merge, so
+leaving the pom at 2.4.1 would leave every later merge re-deploying over a coordinate consumers
+already pin. A consumer
+picks the guard up by repointing its dependency to 2.4.2. The `optional: true` drop on the
+`admin-bff-mfa` `secretKeyRef` ships in the same release chain (generator
+`fix/mfa-factor-key-required`, pinned by that repo's `[mfa-factor-key]` manifest-integrity
+check), so the missing-secret case surfaces at the Kubernetes layer with a clear reason rather
+than as a running-but-degraded pod; turning this guard *fatal*
+(`app.mfa.preconditions.fail-fast=true`) remains a separate per-deployment decision for the
+misconfiguration shapes the scheduler cannot see.
 
 Every check is behind `app.casdoor.mfa.enabled` (**default `false`** in every consumer's
 `application.yml`), so an MFA-off deployment stays completely silent — that invariant is the first
@@ -175,7 +189,7 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
 `EI_EXPOSE_REP2` findings.
 
 ## Current State
-- **Version 2.4.1** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.4.2** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
   `hugmesh-parent` (metapom) **2.8.0** (which runs **PMD + Checkstyle + SpotBugs** during
   `verify` and pins **testcontainers 2.0.5**; PMD and Checkstyle fail on violation, and — as
@@ -258,6 +272,19 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
   (Headwind MDM / AttestationServer tailnet superadmin-gateway route prefixes) and
   `character-forge` + `games-character-forge` + `games-shadows-of-the-net` (the Character
   Forge 3D fe-gateway route + the hugmesh.games wasm slugs of the XR-chat track).
+- **MFA hardening release (2.4.2)**: `WebAuthnService.newChallengeBase64Url` now draws the
+  WebAuthn challenge as **32 CSPRNG bytes** from a shared `SecureRandom` (`CHALLENGE_BYTES = 32`;
+  previously `new DefaultChallenge()`, whose no-arg form in webauthn4j 0.31.7 is
+  `UUID.randomUUID()` packed into 16 bytes — that cleared the W3C "at least 16 bytes" floor, so
+  this is hardening + doc-drift repair, not a live-hole fix); `MfaPreconditionBootGuard` (see the
+  startup-check section above) ships with its `app.mfa.preconditions.fail-fast` opt-in
+  (WARN-by-default unchanged); and the recovered MFA ceremony tests are verified non-vacuous
+  (PRs #39/#40/#41). The bump itself is load-bearing: the `deploy:maven` job re-runs `deploy` at
+  whatever version the pom holds on every `main` merge, so the moment #39/#40/#41 merged, 2.4.1
+  stopped being a trustworthy immutable coordinate — 2.4.2 restores a meaningful pin. (Whether
+  each post-2.4.1 merge's re-publish actually *landed* depends on the deploy job's `verify` leg,
+  which fails locally on the 8 SpotBugs findings below; the coordinate is compromised either
+  way.)
 - **Identity-fold correctness fixes (2.3.4)**: `CasdoorAdminClient#usernameOf` now strips a
   trailing `@...` suffix for EVERY provider (previously only `google`), closing a bug where a
   native `casdoor:` account whose handle is email-shaped (`casdoor:alice@gmail.com`) minted an
@@ -352,7 +379,7 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   pen-test + nuclei in CI.
 
 _Grounded in the HugMesh current-state brief and the repo's landed code at
-auth-core 2.4.1 (2026-07-23, through the Snapdragon→HugMesh rebrand in PR #36 and the
-canonical reserved-prefix revision 7-9 sync), re-verified against a real `./mvnw` build on
-2026-07-22. Features beyond the brief and the actual code are intentionally not invented
-here._
+auth-core 2.4.2 (2026-08-05, through the MFA ceremony-test / precondition-boot-guard /
+32-byte-challenge PRs #39/#40/#41), re-verified against a real `./mvnw -o -s settings.xml test`
+run on 2026-08-05 (450 tests, 0 failures). Features beyond the brief and the actual code are
+intentionally not invented here._
