@@ -25,9 +25,13 @@ import systems.hugmesh.authcore.account.AccountStore;
  *       the gateway-readable claim. Best-effort: a Casdoor-less run (no admin client bean)
  *       or a transport error never fails the challenge.</li>
  * </ol>
- * After the writes it FORCE-REFRESHes the raw-JWT client ({@link RawJwtRefreshService}) so
- * the gateway sees the claim within the freshness window (or applies the documented
- * natural-lifetime fallback).
+ * After the writes it calls {@link RawJwtRefreshService}. ⚠ That call passes a literal
+ * {@code null} refresh_token (this BFF holds none — the native login bypasses the OIDC
+ * redirect), so it ALWAYS takes the natural-lifetime fallback and this call is effectively a
+ * no-op. Only the AUTHORITATIVE {@code bff_session} stamp above is immediate; a raw-JWT
+ * holder must RE-MINT to see {@code mfa_satisfied_at} (which a refresh_token/device_code/
+ * password client can do on demand — nothing here does it for them). See
+ * {@link RawJwtRefreshService}'s javadoc and the generator's {@code docs/MFA-ROLLOUT.md} §2.4.
  *
  * <h3>Ships dark / fail-closed</h3>
  * Gated by {@code app.casdoor.mfa.enabled} (DEFAULT false) — the SAME flag the

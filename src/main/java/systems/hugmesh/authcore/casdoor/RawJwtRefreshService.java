@@ -21,16 +21,44 @@ import reactor.core.publisher.Mono;
  *   <li><b>Held refresh_token present</b> (a future OIDC-redirect / desktop-PKCE caller
  *       whose refresh_token the BFF custody-holds): exchange it for a fresh access token so
  *       the gateway immediately sees the claim. Wired when that custody lands.</li>
- *   <li><b>Natural-lifetime fallback (TODAY):</b> no held refresh_token -> the existing raw
- *       JWT keeps its claims until it naturally expires; the gateway sees
- *       {@code mfa_satisfied_at} on the NEXT mint/refresh the client performs. GEN2 lowers
- *       the privileged-app {@code expireInHours} precisely so this natural-lifetime gap
- *       stays SHORTER than the MFA freshness window. The AUTHORITATIVE
- *       {@code bff_session.mfa_satisfied} stamp (the source of truth for the four step-up
- *       gates + {@code /bff/session}) is unaffected by this gap — it is immediate. The raw
- *       JWT claim is ADVISORY (raw-brand-traffic only).</li>
+ *   <li><b>Natural-lifetime fallback (TODAY, and the ONLY path that ever runs):</b> no held
+ *       refresh_token -> the existing raw JWT keeps its claims until it naturally expires;
+ *       the gateway sees {@code mfa_satisfied_at} on the NEXT mint/refresh the client
+ *       performs. The AUTHORITATIVE {@code bff_session.mfa_satisfied} stamp (the source of
+ *       truth for the step-up gates + {@code /bff/session}) is unaffected by this gap — it
+ *       is immediate. The raw JWT claim is ADVISORY (raw-brand-traffic only).</li>
  * </ol>
- * Resolving empty in the fallback case keeps the A4 challenge a SUCCESS (the authoritative
+ *
+ * <h3>⚠ The GEN2 justification was false, and this path never runs</h3>
+ * A previous revision of this javadoc claimed "GEN2 lowers the privileged-app
+ * {@code expireInHours} precisely so this natural-lifetime gap stays SHORTER than the MFA
+ * freshness window". <b>No such GEN2 change exists</b> ({@code git grep GEN2} in the
+ * generator finds an unrelated CI comment and a disk-partitioning note), and no seeded
+ * expiry is anywhere near the 10-minute window. Do not restore that reasoning.
+ *
+ * <p><b>But note what that does NOT imply.</b> {@code expireInHours} bounds how long a
+ * STALE token stays valid — it is not a bound on how soon a client may MINT a new one. A
+ * caller holding {@code refresh_token} / {@code device_code} / {@code password} can
+ * re-mint on demand and pick the claim up immediately; {@code hugmesh-desktop} is seeded
+ * as a public PKCE client for exactly that, and says so. So the natural-lifetime fallback
+ * is a <b>usability</b> gap, not a lockout: the holder must ACTIVELY refresh after
+ * completing MFA, because nothing here does it for them.
+ *
+ * <p>Path 1 is not merely disabled. {@code MfaChallengeService} is the ONLY caller and it
+ * passes a <b>literal {@code null}</b> as {@code refreshToken}, so {@link #forceRefresh}
+ * always takes the fallback branch — {@code app.bff.oidc.enabled} is {@code true} on the
+ * live BFF pods, so the bean's presence is NOT the blocker, the argument is. Wiring this
+ * needs a real token threaded from that call site, not a flag flip. (A second re-mint path
+ * bypasses this class entirely: admin-bff {@code InternalAccountController
+ * .exchangeSessionRow()} calls {@code oidcExchange.refresh(...)} directly.)
+ *
+ * <p><b>The population that genuinely cannot satisfy MFA</b> is a pure
+ * {@code client_credentials} machine token: {@code mfa_satisfied_at} is a Casdoor <i>user</i>
+ * Property and a machine token has no user subject, so there is nothing to stamp and no
+ * factor to enrol. The operator-facing taxonomy is in the generator's
+ * {@code docs/MFA-ROLLOUT.md} §2.4, pinned by {@code lint:mfa-raw-jwt-posture}.
+ *
+ * <p>Resolving empty in the fallback case keeps the A4 challenge a SUCCESS (the authoritative
  * stamp already landed); this leg NEVER fails the challenge.
  */
 @Service
@@ -64,8 +92,10 @@ public class RawJwtRefreshService {
         if (refreshToken == null || refreshToken.isBlank() || oidcExchange == null) {
             // Natural-lifetime fallback: no held refresh_token (opaque-session caller) or OIDC
             // custody disabled. The authoritative bff_session stamp already landed; the raw-JWT
-            // claim appears on the next natural mint/refresh (bounded by the lowered
-            // privileged-app expiry, GEN2).
+            // claim appears on the CLIENT'S next mint/refresh — which a refresh_token /
+            // device_code / password holder can trigger on demand, but which nothing here
+            // triggers for them. See the class javadoc: this branch is taken unconditionally
+            // today because the only caller passes refreshToken=null.
             log.debug("[mfa-refresh] natural-lifetime fallback "
                     + "(no held refresh_token or OIDC custody off; authoritative session stamp is immediate)");
             return Mono.empty();
