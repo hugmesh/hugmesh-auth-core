@@ -13,7 +13,7 @@ import reactor.netty.http.client.HttpClient;
  * Wires the {@link OidcExchangeClient} ONLY when {@code app.bff.oidc.enabled=true} (default
  * false) — the ships-dark gate for the whole OIDC-custody flow. When the flag is off the bean
  * is absent and its consumers (the user-bff callback, the admin-bff exchange endpoint,
- * {@link RawJwtRefreshService}) inject {@code @Nullable OidcExchangeClient = null} and fall
+ * consumers) inject {@code @Nullable OidcExchangeClient = null} and fall
  * back to today's behavior.
  *
  * <p>Endpoint + confidential-client credentials come from {@code app.bff.oidc.*} (env-driven,

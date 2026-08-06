@@ -24,7 +24,7 @@ import java.util.Map;
  *       that code for tokens here. No browser redirect or callback is involved.</li>
  *   <li>{@link #refresh} — the {@code grant_type=refresh_token} leg the admin-bff
  *       {@code /bff/internal/session/exchange} endpoint uses to lazily re-mint a held access
- *       token before it expires (and that {@link RawJwtRefreshService} delegates to).</li>
+ *       token before it expires.</li>
  * </ol>
  *
  * <p>The returned {@link OidcTokens} are SECRET and are immediately custody-encrypted by the

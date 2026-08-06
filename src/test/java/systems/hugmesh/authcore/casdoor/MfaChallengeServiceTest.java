@@ -31,14 +31,13 @@ class MfaChallengeServiceTest {
 
     private final AccountStore store = mock(AccountStore.class);
     private final MfaFactorVerifier verifier = mock(MfaFactorVerifier.class);
-    private final RawJwtRefreshService refresh = mock(RawJwtRefreshService.class);
     private final CasdoorAdminClient casdoor = mock(CasdoorAdminClient.class);
 
     private MfaChallengeService service(boolean enabled) {
         // MfaStepUpService is the SINGLE source of the dark flag (enabled()); a real instance
         // wired with the same flag keeps the challenge + step-up legs in lockstep.
         MfaStepUpService stepUp = new MfaStepUpService(store, enabled, Duration.ofMinutes(10));
-        return new MfaChallengeService(store, verifier, refresh, casdoor, stepUp);
+        return new MfaChallengeService(store, verifier, casdoor, stepUp);
     }
 
     @Test
@@ -58,7 +57,6 @@ class MfaChallengeServiceTest {
                 .thenReturn(Mono.just(true));
         when(store.stampMfaSatisfied(eq("bff_tok"), eq("otp"))).thenReturn(Mono.just(1L));
         when(casdoor.writeMfaProperty(eq("alice"), anyLong())).thenReturn(Mono.empty());
-        when(refresh.forceRefresh(eq("sub"), any())).thenReturn(Mono.empty());
 
         Boolean satisfied = service(true).challenge("sub", "alice", "bff_tok",
                 MfaFactorVerifier.Factor.TOTP, "123456").block();
@@ -69,7 +67,6 @@ class MfaChallengeServiceTest {
         // (b) ADVISORY Casdoor Property write (sibling-preservation is CasdoorAdminClient's job).
         verify(casdoor, times(1)).writeMfaProperty(eq("alice"), anyLong());
         // (c) FORCE-REFRESH the raw-JWT client.
-        verify(refresh, times(1)).forceRefresh(eq("sub"), any());
     }
 
     @Test
@@ -124,7 +121,6 @@ class MfaChallengeServiceTest {
         // Casdoor Property write blows up -> the challenge still SUCCEEDS (advisory is best-effort).
         when(casdoor.writeMfaProperty(anyString(), anyLong()))
                 .thenReturn(Mono.error(new RuntimeException("casdoor down")));
-        when(refresh.forceRefresh(anyString(), any())).thenReturn(Mono.empty());
 
         Boolean satisfied = service(true).challenge("sub", "alice", "bff_tok",
                 MfaFactorVerifier.Factor.WEBAUTHN, "assertion").block();
@@ -142,10 +138,9 @@ class MfaChallengeServiceTest {
     @Test
     void clearProperty_noCasdoorClient_noOp() {
         MfaStepUpService stepUp = new MfaStepUpService(store, true, Duration.ofMinutes(10));
-        MfaChallengeService noCasdoor = new MfaChallengeService(store, verifier, refresh, null, stepUp);
+        MfaChallengeService noCasdoor = new MfaChallengeService(store, verifier, null, stepUp);
         when(verifier.verify(anyString(), anyString(), any(), anyString())).thenReturn(Mono.just(true));
         when(store.stampMfaSatisfied(anyString(), anyString())).thenReturn(Mono.just(1L));
-        when(refresh.forceRefresh(anyString(), any())).thenReturn(Mono.empty());
         // No NPE, resolves empty.
         noCasdoor.clearProperty("alice").block();
         // Verified challenge with a null Casdoor client: the advisory write is skipped, the

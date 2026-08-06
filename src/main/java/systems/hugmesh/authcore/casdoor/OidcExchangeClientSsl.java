@@ -25,7 +25,7 @@ import java.security.KeyStore;
  * {@code SSL_*}/{@code hugmesh.mtls.client.*} property names — so ONE set of PKCS12 stores +
  * one flag configures outbound mTLS across every internal Java hop (federation, admin-bff
  * internal, Casdoor exchange). Living in auth-core lets every BFF that redeems tokens
- * (user-bff callback path, admin-bff exchange endpoint, RawJwtRefreshService) inherit it.
+ * (user-bff callback path, admin-bff exchange endpoint) inherit it.
  *
  * <p>GATED, DEFAULT OFF: {@code hugmesh.mtls.client.enabled=false}. Local/dev/CI (plain
  * http, no stores mounted) is unaffected — the WebClient keeps its default connector. It also

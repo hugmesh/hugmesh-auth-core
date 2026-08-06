@@ -25,13 +25,15 @@ import systems.hugmesh.authcore.account.AccountStore;
  *       the gateway-readable claim. Best-effort: a Casdoor-less run (no admin client bean)
  *       or a transport error never fails the challenge.</li>
  * </ol>
- * After the writes it calls {@link RawJwtRefreshService}. ⚠ That call passes a literal
- * {@code null} refresh_token (this BFF holds none — the native login bypasses the OIDC
- * redirect), so it ALWAYS takes the natural-lifetime fallback and this call is effectively a
- * no-op. Only the AUTHORITATIVE {@code bff_session} stamp above is immediate; a raw-JWT
- * holder must RE-MINT to see {@code mfa_satisfied_at} (which a refresh_token/device_code/
- * password client can do on demand — nothing here does it for them). See
- * {@link RawJwtRefreshService}'s javadoc and the generator's {@code docs/MFA-ROLLOUT.md} §2.4.
+ * <p>There is deliberately NO third "force-refresh the raw JWT" step. One used to sit here
+ * ({@code RawJwtRefreshService}), and it could not work: it was invoked with a literal
+ * {@code null} refresh_token, it discarded the token it would have minted, and re-minting on
+ * behalf of a SUBJECT cannot change the token a client is already holding anyway. The place
+ * a re-mint genuinely matters is the gateway's {@code bff-exchange} path, where the gateway
+ * validates the CUSTODY JWT — and that is handled where the custody and its cipher already
+ * live: admin-bff's {@code /bff/internal/session/exchange} re-mints whenever
+ * {@code custody_updated_at} is older than the {@code mfa_satisfied_at} stamped just above.
+ * See the generator's {@code docs/MFA-ROLLOUT.md} §2.4 for the full carrier taxonomy.
  *
  * <h3>Ships dark / fail-closed</h3>
  * Gated by {@code app.casdoor.mfa.enabled} (DEFAULT false) — the SAME flag the
@@ -47,7 +49,6 @@ public class MfaChallengeService {
 
     private final AccountStore store;
     private final MfaFactorVerifier verifier;
-    private final RawJwtRefreshService refresh;
     /** The Casdoor admin write client — {@code null} when {@code casdoor.admin.enabled=false}
      *  (Casdoor-less / unit run). The advisory Property write is then skipped; the
      *  authoritative session stamp still lands. */
@@ -59,12 +60,10 @@ public class MfaChallengeService {
 
     public MfaChallengeService(AccountStore store,
                                MfaFactorVerifier verifier,
-                               RawJwtRefreshService refresh,
                                @Nullable CasdoorAdminClient casdoor,
                                MfaStepUpService stepUp) {
         this.store = store;
         this.verifier = verifier;
-        this.refresh = refresh;
         this.casdoor = casdoor;
         // Read the dark flag off the SAME source the step-up leg uses, so the two legs
         // can never disagree about whether MFA is armed.
@@ -110,20 +109,19 @@ public class MfaChallengeService {
         }
         // (a) AUTHORITATIVE: stamp the caller's exact session (immediate, no bleed).
         return store.stampMfaSatisfied(sessionToken, factor.amr())
-                .flatMap(rows -> onSessionStamped(rows, subject, username));
+                .flatMap(rows -> onSessionStamped(rows, username));
     }
 
-    /** After the authoritative session stamp: write advisory + force-refresh, or fail-closed. */
-    private Mono<Boolean> onSessionStamped(Long rows, String subject, String username) {
+    /** After the authoritative session stamp: write the advisory Property, or fail-closed. */
+    private Mono<Boolean> onSessionStamped(Long rows, String username) {
         if (rows == null || rows == 0L) {
             // No session row to stamp (unknown/expired token) -> the
             // verification succeeded but there is nothing to satisfy.
             log.debug("[mfa-challenge] verified but no session row stamped");
             return Mono.just(false);
         }
-        // (b) ADVISORY + (c) FORCE-REFRESH: best-effort, never fail the challenge.
+        // (b) ADVISORY: best-effort, never fail the challenge.
         return writeAdvisory(username)
-                .then(refresh.forceRefresh(subject, null))
                 .thenReturn(true)
                 .onErrorResume(e -> {
                     log.warn("[mfa-challenge] advisory leg best-effort failure "
