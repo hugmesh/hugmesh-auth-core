@@ -24,7 +24,7 @@
   <dependencies>
     <!-- stateless security/tenancy/web building blocks (Casdoor authorities, ApiException) -->
     <dependency>
-      <groupId>systems.hugmesh</groupId>
+      <groupId>net.hugmesh</groupId>
       <artifactId>hugmesh-commons</artifactId>
       <version>2.1.0</version>
     </dependency>
@@ -55,7 +55,7 @@
          stack (spring-boot-testcontainers / postgresql / junit-jupiter / r2dbc) is INHERITED
          from hugmesh-parent's common <dependencies>. -->
     <dependency>
-      <groupId>systems.hugmesh</groupId>
+      <groupId>net.hugmesh</groupId>
       <artifactId>hugmesh-commons</artifactId>
       <version>2.1.0</version>
       <classifier>tests</classifier>

@@ -126,7 +126,7 @@ degradation into an outage:
 - The local compose stack (`tests/stack/compose.local.yaml`) runs MFA on with **neither** WebAuthn
   property set, and its `dev` profile is only the `ADMIN_BFF_PROFILES` default.
 
-admin-bff-api is the **only** consumer that component-scans `systems.hugmesh.authcore` (its
+admin-bff-api is the **only** consumer that component-scans `net.hugmesh.authcore` (its
 `@SpringBootApplication(scanBasePackages = …)`), and it is the admin/superadmin control plane plus
 the gateway's cookie→JWT `POST /bff/internal/session/exchange` leg. Throwing on an absent ESO
 secret would therefore CrashLoopBackOff that whole plane on a fresh cluster bring-up, on a new
