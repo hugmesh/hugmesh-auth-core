@@ -1,0 +1,42 @@
+# Manual release: build/test hugmesh-auth-core and publish the library jar to GitHub
+# Packages (Maven registry). Mirrors the build:test + deploy:maven stages in this repo's
+# .gitlab-ci.yml, ported to the GitHub Packages Maven registry for the hugmesh-net org.
+#
+# workflow_dispatch ONLY — intentionally never runs on push/tag. Stays fully inert until a
+# human enables it.
+name: Release
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+          # Populates a <server> entry for this id in the generated settings.xml, using
+          # the env vars below for username/password — no hand-rolled settings.xml auth.
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Build and test
+        run: ./mvnw -B -ntp verify
+
+      - name: Publish jar to GitHub Packages
+        run: ./mvnw -B -ntp deploy -DskipTests
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
