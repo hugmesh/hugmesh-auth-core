@@ -39,7 +39,7 @@ class OidcExchangeClientTest {
         OidcExchangeClient client = clientReturning(
                 "{\"access_token\":\"AT\",\"refresh_token\":\"RT\",\"id_token\":\"IT\",\"expires_in\":1200}", req);
 
-        StepVerifier.create(client.exchangeCode("the-code", "the-verifier", "https://hugmesh.systems/login/callback"))
+        StepVerifier.create(client.exchangeCode("the-code", "the-verifier", "https://hugmesh.net/login/callback"))
                 .assertNext(t -> {
                     assertThat(t.accessToken()).isEqualTo("AT");
                     assertThat(t.refreshToken()).isEqualTo("RT");

@@ -26,7 +26,7 @@ class AccountStoreEnsureAccountRolesTest {
     private final NamespaceGrantRepository grants = mock(NamespaceGrantRepository.class);
 
     private AccountStore store() {
-        return new AccountStore(allowlist, accounts, sessions, grants, "admin@hugmesh.systems");
+        return new AccountStore(allowlist, accounts, sessions, grants, "admin@hugmesh.net");
     }
 
     @Test
@@ -82,16 +82,16 @@ class AccountStoreEnsureAccountRolesTest {
         // if the read-only contract were violated, the result would come back as
         // ["user","admin"] (the recomputed default) rather than this stored value.
         AccountRow existing = new AccountRow(
-                "google:admin@hugmesh.systems", "google", "admin@hugmesh.systems",
+                "google:admin@hugmesh.net", "google", "admin@hugmesh.net",
                 true, "user,admin,superadmin", LocalDateTime.now().minusDays(1));
-        when(accounts.findById("google:admin@hugmesh.systems")).thenReturn(Mono.just(existing));
+        when(accounts.findById("google:admin@hugmesh.net")).thenReturn(Mono.just(existing));
         // Stubbed only so the (unsubscribed, never-taken) switchIfEmpty branch's eager
         // Mono construction doesn't NPE — it is never actually exercised for an existing
         // row, which is exactly the behavior this test proves via the returned roles.
         when(accounts.save(any())).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
-        Account viaNull = store().ensureAccount("google", "admin@hugmesh.systems", null).block();
-        Account viaEmpty = store().ensureAccount("google", "admin@hugmesh.systems", List.of()).block();
+        Account viaNull = store().ensureAccount("google", "admin@hugmesh.net", null).block();
+        Account viaEmpty = store().ensureAccount("google", "admin@hugmesh.net", List.of()).block();
 
         assertThat(viaNull.roles()).containsExactly("user", "admin", "superadmin");
         assertThat(viaEmpty.roles()).containsExactly("user", "admin", "superadmin");
@@ -99,10 +99,10 @@ class AccountStoreEnsureAccountRolesTest {
 
     @Test
     void nullRoles_newAccount_stillAppliesGoogleAdminEmailsDefault() {
-        when(accounts.findById("google:admin@hugmesh.systems")).thenReturn(Mono.empty());
+        when(accounts.findById("google:admin@hugmesh.net")).thenReturn(Mono.empty());
         when(accounts.save(any())).thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
-        Account a = store().ensureAccount("google", "admin@hugmesh.systems", null).block();
+        Account a = store().ensureAccount("google", "admin@hugmesh.net", null).block();
 
         assertThat(a.roles()).containsExactly("user", "admin");
         assertThat(a.isAdmin()).isTrue();

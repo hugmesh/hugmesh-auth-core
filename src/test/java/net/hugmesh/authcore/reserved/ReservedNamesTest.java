@@ -102,7 +102,7 @@ class ReservedNamesTest {
         // /v1/analyze/** be-gateway route) — revision 4; `index.html`, `favicon.ico`,
         // `importmap.json`, `remoteentry.json` (the fe-gateway anonymous-SPA-shell
         // webroot filenames) — revision 5; and `ai` (the edge-AI inference-tier host
-        // ai.hugmesh.systems) — revision 6. Stored lower-case like every other
+        // ai.hugmesh.net) — revision 6. Stored lower-case like every other
         // entry (the on-disk manifest filename is "remoteEntry.json" — matching is
         // case-insensitive; isReserved() lower-cases the candidate first).
         assertThat(ReservedNames.isReserved(label)).isTrue();

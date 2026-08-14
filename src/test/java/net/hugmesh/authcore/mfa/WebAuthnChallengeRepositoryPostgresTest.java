@@ -56,7 +56,7 @@ class WebAuthnChallengeRepositoryPostgresTest extends PostgresTestSupport {
         // 152 declares varchar(512). This case inserts what the service ACTUALLY issues, so a
         // challenge widened past the column (or a column narrowed under it) fails here instead
         // of at runtime on the first enrollment.
-        String realChallenge = new WebAuthnService("hugmesh.systems", "https://admin.hugmesh.systems", "HugMesh")
+        String realChallenge = new WebAuthnService("hugmesh.net", "https://admin.hugmesh.net", "HugMesh")
                 .newChallengeBase64Url();
         assertThat(realChallenge).hasSize(43);
 

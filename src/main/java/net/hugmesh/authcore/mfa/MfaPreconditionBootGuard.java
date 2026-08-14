@@ -364,7 +364,7 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
                     + " on a non-dev deployment, so every passkey would be registered against the "
                     + "WRONG Relying Party and no WebAuthn ceremony could ever succeed. Set it to "
                     + "the registrable domain the browser actually loads (env "
-                    + "APP_MFA_WEBAUTHN_RP_ID, e.g. admin.hugmesh.systems).");
+                    + "APP_MFA_WEBAUTHN_RP_ID, e.g. admin.hugmesh.net).");
         }
         if (originsLoopback) {
             problems.add("[" + PROP_ORIGINS + "] is "
@@ -372,7 +372,7 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
                                             : "'" + originsCsv + "', all loopback origins")
                     + " on a non-dev deployment, so the ceremony would reject every real browser "
                     + "origin. Set the CSV allowlist to the deployed https origin(s) (env "
-                    + "APP_MFA_WEBAUTHN_ORIGINS, e.g. https://admin.hugmesh.systems).");
+                    + "APP_MFA_WEBAUTHN_ORIGINS, e.g. https://admin.hugmesh.net).");
         }
     }
 }

@@ -155,8 +155,8 @@ class MfaPreconditionBootGuardTest {
             // release chain (an absent Secret is the scheduler's problem now), but an empty key
             // still arrives via a present-but-blank Secret value or a pre-tightening manifest —
             // and the pod must keep booting through it.
-            MfaPreconditionBootGuard g = guard(true, "", "admin.hugmesh.systems",
-                    "https://admin.hugmesh.systems", false);
+            MfaPreconditionBootGuard g = guard(true, "", "admin.hugmesh.net",
+                    "https://admin.hugmesh.net", false);
             assertThatCode(g::afterSingletonsInstantiated).doesNotThrowAnyException();
 
             String warn = onlyWarning();
@@ -207,8 +207,8 @@ class MfaPreconditionBootGuardTest {
 
         @Test
         void staysQuiet_whenThePreconditionsAreActuallyMet() {
-            MfaPreconditionBootGuard g = guard(true, KEY_32B, "admin.hugmesh.systems",
-                    "https://admin.hugmesh.systems", false);
+            MfaPreconditionBootGuard g = guard(true, KEY_32B, "admin.hugmesh.net",
+                    "https://admin.hugmesh.net", false);
             assertThatCode(g::afterSingletonsInstantiated).doesNotThrowAnyException();
             assertThat(warnings()).isEmpty();
         }
@@ -282,7 +282,7 @@ class MfaPreconditionBootGuardTest {
         @Test
         void refusesToBoot_whenRpIdIsAbsentOnNonDevProfile() {
             MfaPreconditionBootGuard g =
-                    strictGuard(true, KEY_32B, "", "https://admin.hugmesh.systems", false);
+                    strictGuard(true, KEY_32B, "", "https://admin.hugmesh.net", false);
             assertThatThrownBy(g::afterSingletonsInstantiated)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("app.mfa.webauthn.rp-id")
@@ -303,7 +303,7 @@ class MfaPreconditionBootGuardTest {
             // A half-configured deploy: real RP ID, forgotten origin allowlist. The ceremony
             // would reject every real browser origin, so it is equally reportable.
             MfaPreconditionBootGuard g =
-                    strictGuard(true, KEY_32B, "admin.hugmesh.systems", "https://localhost", false);
+                    strictGuard(true, KEY_32B, "admin.hugmesh.net", "https://localhost", false);
             assertThatThrownBy(g::afterSingletonsInstantiated)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("app.mfa.webauthn.origins")
@@ -315,18 +315,18 @@ class MfaPreconditionBootGuardTest {
         @Test
         void boots_whenTheClusterPostureIsFullyConfigured() {
             // The exact committed cluster values (specs/cluster/manifests/admin-bff-api/
-            // deployment.yaml: RP_ID=admin.hugmesh.systems, ORIGINS=https://admin.hugmesh.systems,
+            // deployment.yaml: RP_ID=admin.hugmesh.net, ORIGINS=https://admin.hugmesh.net,
             // profiles casdoor,clickhouse => NOT dev) plus a provisioned key.
-            MfaPreconditionBootGuard g = strictGuard(true, KEY_32B, "admin.hugmesh.systems",
-                    "https://admin.hugmesh.systems", false);
+            MfaPreconditionBootGuard g = strictGuard(true, KEY_32B, "admin.hugmesh.net",
+                    "https://admin.hugmesh.net", false);
             assertThatCode(g::afterSingletonsInstantiated).doesNotThrowAnyException();
         }
 
         @Test
         void boots_whenOriginsMixLoopbackWithARealOrigin() {
             // Not ALL loopback -> a real browser origin can pass, so this is not a problem.
-            MfaPreconditionBootGuard g = strictGuard(true, KEY_32B, "admin.hugmesh.systems",
-                    "https://localhost, https://admin.hugmesh.systems", false);
+            MfaPreconditionBootGuard g = strictGuard(true, KEY_32B, "admin.hugmesh.net",
+                    "https://localhost, https://admin.hugmesh.net", false);
             assertThatCode(g::afterSingletonsInstantiated).doesNotThrowAnyException();
         }
 
@@ -361,8 +361,8 @@ class MfaPreconditionBootGuardTest {
         @Test
         void theOptInEscalatesAndDoesNotAlsoLogTheStartingAnywayWarn() {
             // The two paths are exclusive: a fatal boot must not also claim it is starting anyway.
-            MfaPreconditionBootGuard g = strictGuard(true, "", "admin.hugmesh.systems",
-                    "https://admin.hugmesh.systems", false);
+            MfaPreconditionBootGuard g = strictGuard(true, "", "admin.hugmesh.net",
+                    "https://admin.hugmesh.net", false);
             assertThatThrownBy(g::afterSingletonsInstantiated)
                     .isInstanceOf(IllegalStateException.class);
             assertThat(warnings()).isEmpty();
@@ -549,8 +549,8 @@ class MfaPreconditionBootGuardTest {
 
         @Test
         void realHostsAreNotLoopback() {
-            assertThat(MfaPreconditionBootGuard.isLoopbackHost("admin.hugmesh.systems")).isFalse();
-            assertThat(MfaPreconditionBootGuard.isLoopbackHost("hugmesh.systems")).isFalse();
+            assertThat(MfaPreconditionBootGuard.isLoopbackHost("admin.hugmesh.net")).isFalse();
+            assertThat(MfaPreconditionBootGuard.isLoopbackHost("hugmesh.net")).isFalse();
             assertThat(MfaPreconditionBootGuard.isLoopbackHost("10.0.0.5")).isFalse();
             // mDNS .local is DELIBERATELY not loopback: a LAN mesh node may legitimately be
             // named foo.local and must not be reported.
@@ -575,9 +575,9 @@ class MfaPreconditionBootGuardTest {
         @Test
         void originListsContainingARealOriginAreNotAllLoopback() {
             assertThat(MfaPreconditionBootGuard.isAllLoopbackOrigins(
-                    "https://admin.hugmesh.systems")).isFalse();
+                    "https://admin.hugmesh.net")).isFalse();
             assertThat(MfaPreconditionBootGuard.isAllLoopbackOrigins(
-                    "https://localhost,https://admin.hugmesh.systems")).isFalse();
+                    "https://localhost,https://admin.hugmesh.net")).isFalse();
             // An unparseable/exotic entry must count as NON-loopback — never raise an alarm on a
             // value this classifier merely failed to understand.
             assertThat(MfaPreconditionBootGuard.isAllLoopbackOrigins("!!not a uri!!")).isFalse();

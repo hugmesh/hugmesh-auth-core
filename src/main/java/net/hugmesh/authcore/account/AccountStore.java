@@ -64,7 +64,7 @@ public class AccountStore {
                         AccountRowRepository accounts,
                         BffSessionRepository sessions,
                         NamespaceGrantRepository grants,
-                        @Value("${app.admin-emails:admin@hugmesh.systems}") String adminEmails) {
+                        @Value("${app.admin-emails:admin@hugmesh.net}") String adminEmails) {
         this.allowlist = allowlist;
         this.accounts = accounts;
         this.sessions = sessions;

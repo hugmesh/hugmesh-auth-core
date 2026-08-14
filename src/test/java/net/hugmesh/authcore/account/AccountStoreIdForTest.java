@@ -72,7 +72,7 @@ class AccountStoreIdForTest {
     private final NamespaceGrantRepository grants = mock(NamespaceGrantRepository.class);
 
     private AccountStore store() {
-        return new AccountStore(allowlist, accounts, sessions, grants, "admin@hugmesh.systems");
+        return new AccountStore(allowlist, accounts, sessions, grants, "admin@hugmesh.net");
     }
 
     @Test

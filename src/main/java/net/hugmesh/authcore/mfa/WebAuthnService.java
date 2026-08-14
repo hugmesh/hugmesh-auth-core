@@ -37,9 +37,9 @@ import java.util.Set;
  * {@link WebAuthnException} the caller maps to {@code false}/4xx — never a silent pass.
  *
  * <h3>RP / origin config</h3>
- * {@code app.mfa.webauthn.rp-id} (the registrable domain, e.g. {@code hugmesh.systems})
+ * {@code app.mfa.webauthn.rp-id} (the registrable domain, e.g. {@code hugmesh.net})
  * and {@code app.mfa.webauthn.origins} (the CSV origin allowlist, e.g.
- * {@code https://admin.hugmesh.systems}). The challenge is generated server-side and the
+ * {@code https://admin.hugmesh.net}). The challenge is generated server-side and the
  * caller binds it to the session (stored pending) — this service is stateless about the
  * pending challenge; the caller passes back the exact issued challenge to verify against.
  */

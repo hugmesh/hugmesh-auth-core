@@ -200,7 +200,7 @@ class MfaEnrollmentServiceWebAuthnTest {
     @Test
     void beginEnroll_stashesAFreshChallengeUnderREGISTER_keyedOnTheSession() {
         when(webauthn.newChallengeBase64Url()).thenReturn("fresh-challenge");
-        when(webauthn.rpId()).thenReturn("hugmesh.systems");
+        when(webauthn.rpId()).thenReturn("hugmesh.net");
         when(webauthn.rpName()).thenReturn("HugMesh");
         when(challenges.put(anyString(), anyString(), anyString())).thenReturn(Mono.empty());
 
@@ -211,7 +211,7 @@ class MfaEnrollmentServiceWebAuthnTest {
         // The options handed to navigator.credentials.create() carry the SAME challenge that was
         // stashed — if these diverged, no genuine ceremony could ever verify.
         assertThat(options.challenge()).isEqualTo("fresh-challenge");
-        assertThat(options.rpId()).isEqualTo("hugmesh.systems");
+        assertThat(options.rpId()).isEqualTo("hugmesh.net");
         assertThat(options.rpName()).isEqualTo("HugMesh");
         verify(challenges).put(SESSION, WebAuthnChallengeStore.PURPOSE_REGISTER, "fresh-challenge");
         verify(challenges, never()).put(anyString(),
@@ -221,7 +221,7 @@ class MfaEnrollmentServiceWebAuthnTest {
     @Test
     void beginAssertion_stashesAFreshChallengeUnderASSERT_keyedOnTheSubject() {
         when(webauthn.newChallengeBase64Url()).thenReturn("fresh-assert-challenge");
-        when(webauthn.rpId()).thenReturn("hugmesh.systems");
+        when(webauthn.rpId()).thenReturn("hugmesh.net");
         when(webauthn.rpName()).thenReturn("HugMesh");
         when(challenges.put(anyString(), anyString(), anyString())).thenReturn(Mono.empty());
 

@@ -55,8 +55,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class WebAuthnServiceTest {
 
-    private static final String RP_ID = "hugmesh.systems";
-    private static final String ORIGIN = "https://admin.hugmesh.systems";
+    private static final String RP_ID = "hugmesh.net";
+    private static final String ORIGIN = "https://admin.hugmesh.net";
 
     private final WebAuthnService service = new WebAuthnService(RP_ID, ORIGIN, "HugMesh");
 
@@ -87,9 +87,9 @@ class WebAuthnServiceTest {
 
     @Test
     void rpIdAndRpName_areTrimmed() {
-        assertThat(new WebAuthnService("  hugmesh.systems  ", null, "  Brand  ").rpId())
-                .isEqualTo("hugmesh.systems");
-        assertThat(new WebAuthnService("  hugmesh.systems  ", null, "  Brand  ").rpName())
+        assertThat(new WebAuthnService("  hugmesh.net  ", null, "  Brand  ").rpId())
+                .isEqualTo("hugmesh.net");
+        assertThat(new WebAuthnService("  hugmesh.net  ", null, "  Brand  ").rpName())
                 .isEqualTo("Brand");
     }
 
@@ -150,23 +150,23 @@ class WebAuthnServiceTest {
     @Test
     void originAllowlist_everyConfiguredCsvEntry_isAccepted_andNothingElseIs() {
         WebAuthnService multi = new WebAuthnService(RP_ID,
-                " https://admin.hugmesh.systems , https://app.hugmesh.systems ,, ", "HugMesh");
+                " https://admin.hugmesh.net , https://app.hugmesh.net ,, ", "HugMesh");
         String c = multi.newChallengeBase64Url();
 
         // Both configured origins work (proves the CSV split + trim reach the ServerProperty)...
         assertThat(multi.verifyRegistration(
-                authenticator.registrationResponseJson(c, "https://admin.hugmesh.systems", RP_ID, 0L), c))
+                authenticator.registrationResponseJson(c, "https://admin.hugmesh.net", RP_ID, 0L), c))
                 .isNotNull();
         assertThat(multi.verifyRegistration(
-                authenticator.registrationResponseJson(c, "https://app.hugmesh.systems", RP_ID, 0L), c))
+                authenticator.registrationResponseJson(c, "https://app.hugmesh.net", RP_ID, 0L), c))
                 .isNotNull();
         // ...and a third one does not.
         assertThatThrownBy(() -> multi.verifyRegistration(
-                authenticator.registrationResponseJson(c, "https://other.hugmesh.systems", RP_ID, 0L), c))
+                authenticator.registrationResponseJson(c, "https://other.hugmesh.net", RP_ID, 0L), c))
                 .isInstanceOf(WebAuthnService.WebAuthnException.class);
         // Scheme is part of the origin: plain http on an allowlisted host is NOT the same origin.
         assertThatThrownBy(() -> multi.verifyRegistration(
-                authenticator.registrationResponseJson(c, "http://admin.hugmesh.systems", RP_ID, 0L), c))
+                authenticator.registrationResponseJson(c, "http://admin.hugmesh.net", RP_ID, 0L), c))
                 .isInstanceOf(WebAuthnService.WebAuthnException.class);
     }
 

@@ -70,8 +70,8 @@ class MfaPreconditionBootGuardContextTest {
         // makes full ABSENCE a scheduler-level failure since the 2.4.2 release chain).
         try (AnnotationConfigApplicationContext c = ctx(Map.of(
                 "app.casdoor.mfa.enabled", "true",
-                "app.mfa.webauthn.rp-id", "admin.hugmesh.systems",
-                "app.mfa.webauthn.origins", "https://admin.hugmesh.systems"),
+                "app.mfa.webauthn.rp-id", "admin.hugmesh.net",
+                "app.mfa.webauthn.origins", "https://admin.hugmesh.net"),
                 CLUSTER_PROFILES)) {
             assertThatCode(c::refresh).doesNotThrowAnyException();
         }
@@ -92,8 +92,8 @@ class MfaPreconditionBootGuardContextTest {
         try (AnnotationConfigApplicationContext c = ctx(Map.of(
                 "app.casdoor.mfa.enabled", "true",
                 "app.mfa.preconditions.fail-fast", "true",
-                "app.mfa.webauthn.rp-id", "admin.hugmesh.systems",
-                "app.mfa.webauthn.origins", "https://admin.hugmesh.systems"),
+                "app.mfa.webauthn.rp-id", "admin.hugmesh.net",
+                "app.mfa.webauthn.origins", "https://admin.hugmesh.net"),
                 CLUSTER_PROFILES)) {
             assertThatThrownBy(c::refresh)
                     .hasStackTraceContaining("REFUSING TO BOOT")
