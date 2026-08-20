@@ -189,7 +189,7 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
 `EI_EXPOSE_REP2` findings.
 
 ## Current State
-- **Version 2.4.2** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.5.0** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
   `hugmesh-parent` (metapom) **2.8.0** (which runs **PMD + Checkstyle + SpotBugs** during
   `verify` and pins **testcontainers 2.0.5**; PMD and Checkstyle fail on violation, and — as
@@ -227,7 +227,10 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
   could read/write/delete brand-Y's invite or namespace-grant rows. `AllowlistRepository` /
   `NamespaceGrantRepository` expose domain-scoped finders, deletes, and a 3-arg
   `insertIfAbsent(..., domain)`; existing rows back-fill to `"default"`. The registration-gate
-  read `existsByProviderAndHandle` is intentionally left **unscoped** (see Known Gaps below).
+  read is domain-scoped too (`existsByProviderAndHandleAndDomain`, surfaced as
+  `AccountStore.isEmailInvited(email, domain)` / `isDiscordInvited(handle, domain)`); the
+  unscoped `existsByProviderAndHandle` overloads are **deprecated** and kept only for callers
+  not yet threaded with a requesting domain (see Known Gaps below).
 - **Subject-level revocation (`GatewayRevocationClient.revokeSubject`)**: writes a
   `subject:<casdoorSub>` key so the gateway's `RevocationGatewayFilter` denies a user's
   live custody JWT immediately on role-revoke, instead of waiting out its natural TTL
@@ -304,13 +307,16 @@ fixed SpotBugs's fail switch (`failOnError`, not the no-op `failOnViolation` the
 
 ## Known Gaps / TODO
 Verified against the current code (no invented gaps):
-- **Registration-gate allowlist check is cross-brand permissive** — `AllowlistRepository
-  .existsByProviderAndHandle` (used by `AccountStore` for the Google/Discord invite check)
-  is intentionally left **unscoped** by domain, so a handle invited to brand X's allowlist
-  also passes the registration gate for brand Y. Fixing this needs OAuth-flow domain
-  context that isn't available at that call site yet — noted as a follow-up in the
-  domain-scoping change itself (`AllowlistRepository.java:17-18`,
-  `AccountStore.java:129,134`).
+- **Registration gate: the scoped check exists, the BFF call sites are not migrated yet** —
+  this jar now offers the domain-scoped gate (`AllowlistRepository
+  .existsByProviderAndHandleAndDomain`, `AccountStore.isEmailInvited(email, domain)` /
+  `isDiscordInvited(handle, domain)`) and **deprecates** the unscoped overloads. Until the
+  consumers migrate, the cross-brand hole stays open at THEIR call sites: admin-bff's
+  `AuthController.registerGoogle` / `registerDiscord` and
+  `InternalAccountController#ensureAccount` still call the deprecated unscoped overloads,
+  because a *pre-authentication* registration request has no validated JWT and therefore no
+  `PrincipalDomain` — deciding where that domain comes from (request host, an explicit body
+  field, or a per-deployment property) is a BFF-side decision, not a library one.
 - **Gateway revocation writes are a no-op unless explicitly enabled** —
   `GatewayRevocationClient.revokeCoarse` / `revokeSubject` / `clearCoarse` all short-circuit
   to a logged STUB (`Mono.empty()`) when `broker.gateway-revocation.enabled` is `false`

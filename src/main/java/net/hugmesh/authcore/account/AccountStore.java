@@ -121,15 +121,40 @@ public class AccountStore {
     }
 
     /**
-     * Registration gate: whether {@code email} is invited in ANY domain. Unscoped —
-     * single-tenant installs have a single brand; in multi-tenant the registration gate
-     * checks cross-brand permissively (domain-aware registration is a follow-up).
+     * Registration gate (domain-scoped): whether {@code email} is invited IN
+     * {@code domain}. An invite stamped with brand X's domain does NOT satisfy brand Y's
+     * gate. Single-tenant callers pass {@link #DEFAULT_DOMAIN} — the domain the admin
+     * seed stamps and the changeset-220 back-fill wrote onto pre-existing rows.
      */
+    public Mono<Boolean> isEmailInvited(String email, String domain) {
+        return allowlist.existsByProviderAndHandleAndDomain("google", email.toLowerCase(), domain);
+    }
+
+    /** Registration gate (domain-scoped): whether {@code handle} is invited IN {@code domain}. */
+    public Mono<Boolean> isDiscordInvited(String handle, String domain) {
+        return allowlist.existsByProviderAndHandleAndDomain("discord", handle.toLowerCase(), domain);
+    }
+
+    /**
+     * Registration gate: whether {@code email} is invited in ANY domain.
+     *
+     * @deprecated cross-brand permissive — a handle invited to brand X's allowlist also
+     *     passes brand Y's gate. Use {@link #isEmailInvited(String, String)} with the
+     *     requesting domain ({@link #DEFAULT_DOMAIN} on single-tenant installs). Retained
+     *     only so call sites not yet threaded with an OAuth-flow domain keep compiling.
+     */
+    @Deprecated
     public Mono<Boolean> isEmailInvited(String email) {
         return allowlist.existsByProviderAndHandle("google", email.toLowerCase());
     }
 
-    /** Registration gate: whether {@code handle} is invited in ANY domain (unscoped). */
+    /**
+     * Registration gate: whether {@code handle} is invited in ANY domain.
+     *
+     * @deprecated cross-brand permissive — see {@link #isEmailInvited(String)}. Use
+     *     {@link #isDiscordInvited(String, String)} with the requesting domain.
+     */
+    @Deprecated
     public Mono<Boolean> isDiscordInvited(String handle) {
         return allowlist.existsByProviderAndHandle("discord", handle.toLowerCase());
     }
