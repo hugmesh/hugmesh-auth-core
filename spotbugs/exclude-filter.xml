@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Repo-local SpotBugs exclude filter for hugmesh-auth-core.
+
+  LAYERED, NOT A REPLACEMENT: hugmesh-parent binds the fleet-wide baseline via
+  <excludeFilterFile>hugmesh/spotbugs-exclude.xml</excludeFilterFile> (read off the
+  build-config jar on the plugin classpath). This file is wired in through the plugin's
+  SEPARATE <excludeFilterFiles> list, so the shared entity/test/Spring-injection baseline
+  still applies — overriding <excludeFilterFile> here would have dropped it.
+
+  WHY: build-config 0.4.0 suppresses the Spring constructor-injection EI_EXPOSE_REP2 false
+  positive by CLASS-NAME SUFFIX, and that suffix list is deliberately limited to the
+  stereotypes the older package rule already named (Service|Controller|Repository|Client|
+  Config|Handler|Filter|Resolver). Its MAINTAINER NOTE is explicit that it is NOT to be
+  broadened to app-specific bean suffixes — those "stay reported and get triaged on their
+  merits rather than silently muted". This file is that triage for the three auth-core
+  beans whose names end in Store/Verifier.
+
+  TRIAGE: all eight findings are the same false positive — a @Component constructor
+  storing injected Spring SINGLETON collaborators (R2DBC repositories, cipher/service
+  beans) into final fields. That is the idiomatic DI pattern; a defensive copy of a
+  repository bean is nonsensical, and none of the fields is ever handed back out.
+  Renaming the classes to a covered suffix is not an option: AccountStore and
+  WebAuthnChallengeStore are public API consumed by user-bff and admin-bff.
+
+  SCOPE: the three named classes only, EI_EXPOSE_REP2 only, and it carries build-config's
+  own guard — a field holding genuinely mutable caller-owned state (byte[]/char[] key
+  material, or a mutable collection/date) is still REPORTED even inside these classes.
+  Regex is not available on <Field type>, so the types are listed exactly, mirroring the
+  shared filter.
+-->
+<FindBugsFilter>
+  <Match>
+    <Or>
+      <Class name="net.hugmesh.authcore.account.AccountStore"/>
+      <Class name="net.hugmesh.authcore.mfa.BffStoredMfaFactorVerifier"/>
+      <Class name="net.hugmesh.authcore.mfa.WebAuthnChallengeStore"/>
+    </Or>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+    <Not>
+      <Or>
+        <!-- Secret-shaped: caller-supplied key / token / password material. -->
+        <Field type="byte[]"/>
+        <Field type="char[]"/>
+        <!-- Mutable data carriers stored by reference. -->
+        <Field type="java.util.List"/>
+        <Field type="java.util.Map"/>
+        <Field type="java.util.Set"/>
+        <Field type="java.util.Collection"/>
+        <Field type="java.util.Date"/>
+      </Or>
+    </Not>
+  </Match>
+</FindBugsFilter>

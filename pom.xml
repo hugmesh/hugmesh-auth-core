@@ -74,6 +74,22 @@
         <artifactId>spring-boot-maven-plugin</artifactId>
         <configuration><skip>true</skip></configuration>
       </plugin>
+      <!-- Binds the parent-managed spotbugs-maven-plugin config and ADDS a repo-local
+           exclude filter. Deliberately <excludeFilterFiles> (the plural list parameter)
+           and NOT <excludeFilterFile>: the latter is what hugmesh-parent points at the
+           shared hugmesh/spotbugs-exclude.xml baseline, so redeclaring it here would
+           REPLACE that baseline instead of layering on it. See spotbugs/exclude-filter.xml
+           for the triage of the eight EI_EXPOSE_REP2 findings on the *Store/*Verifier
+           beans, a suffix the shared filter deliberately does not cover. -->
+      <plugin>
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <configuration>
+          <excludeFilterFiles>
+            <excludeFilterFile>${project.basedir}/spotbugs/exclude-filter.xml</excludeFilterFile>
+          </excludeFilterFiles>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 </project>
