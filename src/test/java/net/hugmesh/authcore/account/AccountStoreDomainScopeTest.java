@@ -22,6 +22,9 @@ import static org.mockito.Mockito.when;
  *   <li>Domain-scoped writes stamp the correct domain on the row.</li>
  *   <li>Domain-scoped deletes pass the domain predicate so cross-tenant deletes are rejected
  *       at the SQL level (the domain column is in the WHERE clause).</li>
+ *   <li>The registration gate is domain-scoped: it delegates to the domain-filtered
+ *       {@code exists} finder, so an invite stamped with brand X does not admit a
+ *       registration on brand Y.</li>
  * </ul>
  * Repositories are Mockito mocks — no database required.
  */
@@ -77,6 +80,74 @@ class AccountStoreDomainScopeTest {
                 .verifyComplete();
 
         verify(allowlist).findByProviderAndDomainOrderByHandle("discord", "brandx");
+    }
+
+    // ── Allowlist — registration gate ─────────────────────────────────
+
+    @Test
+    void isEmailInvited_domainScoped_callsDomainFilteredExists() {
+        when(allowlist.existsByProviderAndHandleAndDomain("google", "alice@brand.com", "brandx"))
+                .thenReturn(Mono.just(true));
+
+        StepVerifier.create(store().isEmailInvited("alice@brand.com", "brandx"))
+                .expectNext(true)
+                .verifyComplete();
+
+        verify(allowlist).existsByProviderAndHandleAndDomain("google", "alice@brand.com", "brandx");
+        verify(allowlist, never()).existsByProviderAndHandle("google", "alice@brand.com");
+    }
+
+    @Test
+    void isEmailInvited_domainScoped_lowercasesHandle() {
+        when(allowlist.existsByProviderAndHandleAndDomain("google", "alice@brand.com", "brandx"))
+                .thenReturn(Mono.just(true));
+
+        StepVerifier.create(store().isEmailInvited("ALICE@BRAND.COM", "brandx"))
+                .expectNext(true)
+                .verifyComplete();
+
+        verify(allowlist).existsByProviderAndHandleAndDomain("google", "alice@brand.com", "brandx");
+    }
+
+    /** The gap this scoping closes: brand-X's invite must not admit a brand-Y registration. */
+    @Test
+    void isEmailInvited_domainScoped_deniesInviteFromAnotherBrand() {
+        // alice is invited to brandx only — the brandy gate must see no row.
+        when(allowlist.existsByProviderAndHandleAndDomain("google", "alice@brand.com", "brandy"))
+                .thenReturn(Mono.just(false));
+
+        StepVerifier.create(store().isEmailInvited("alice@brand.com", "brandy"))
+                .expectNext(false)
+                .verifyComplete();
+
+        verify(allowlist).existsByProviderAndHandleAndDomain("google", "alice@brand.com", "brandy");
+    }
+
+    @Test
+    void isDiscordInvited_domainScoped_callsDomainFilteredExists() {
+        when(allowlist.existsByProviderAndHandleAndDomain("discord", "alice#1234", "brandy"))
+                .thenReturn(Mono.just(true));
+
+        StepVerifier.create(store().isDiscordInvited("alice#1234", "brandy"))
+                .expectNext(true)
+                .verifyComplete();
+
+        verify(allowlist).existsByProviderAndHandleAndDomain("discord", "alice#1234", "brandy");
+        verify(allowlist, never()).existsByProviderAndHandle("discord", "alice#1234");
+    }
+
+    /** Back-compat: the deprecated unscoped overloads still hit the unscoped finder. */
+    @Test
+    @SuppressWarnings("deprecation")
+    void isEmailInvited_unscoped_stillCallsUnscopedExists() {
+        when(allowlist.existsByProviderAndHandle("google", "alice@brand.com"))
+                .thenReturn(Mono.just(true));
+
+        StepVerifier.create(store().isEmailInvited("alice@brand.com"))
+                .expectNext(true)
+                .verifyComplete();
+
+        verify(allowlist).existsByProviderAndHandle("google", "alice@brand.com");
     }
 
     // ── Allowlist — writes ────────────────────────────────────────────

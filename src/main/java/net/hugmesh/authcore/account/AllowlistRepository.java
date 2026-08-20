@@ -13,9 +13,11 @@ import reactor.core.publisher.Mono;
  * {@code @Modifying @Query} ({@code WHERE NOT EXISTS} guard, not derivable). The
  * {@link AccountStore} facade composes these.
  *
- * <p>Domain-scoped variants (suffix {@code AndDomain}) are the admin CRUD path. The
- * unscoped {@code existsByProviderAndHandle} is retained for the registration gate where
- * an invited-to-any-brand check is the correct semantic.
+ * <p>Domain-scoped variants (suffix {@code AndDomain}) are the admin CRUD path AND the
+ * registration gate ({@code existsByProviderAndHandleAndDomain}). The unscoped
+ * {@code existsByProviderAndHandle} is retained only so callers that are not yet threaded
+ * with the requesting domain keep compiling — it is cross-brand permissive, and the
+ * {@link AccountStore} facade deprecates it.
  */
 public interface AllowlistRepository extends ReactiveCrudRepository<Allowlist, String> {
 
@@ -25,8 +27,18 @@ public interface AllowlistRepository extends ReactiveCrudRepository<Allowlist, S
     /** All handles for a provider across ALL domains (SUPERADMIN unscoped list). */
     Flux<Allowlist> findByProviderOrderByHandle(String provider);
 
-    /** Whether a (provider, handle) invite exists in ANY domain — registration gate. */
+    /**
+     * Whether a (provider, handle) invite exists in ANY domain. Cross-brand permissive —
+     * kept for un-migrated callers only; new call sites use the domain-scoped variant.
+     */
     Mono<Boolean> existsByProviderAndHandle(String provider, String handle);
+
+    /**
+     * Whether a (provider, handle) invite exists IN {@code domain} — the domain-scoped
+     * registration gate. An invite stamped with brand X's domain no longer satisfies
+     * brand Y's gate. Single-tenant rows carry the {@code "default"} back-fill domain.
+     */
+    Mono<Boolean> existsByProviderAndHandleAndDomain(String provider, String handle, String domain);
 
     /** Delete a (provider, handle, domain) invite row (idempotent, domain-scoped). */
     Mono<Long> deleteByProviderAndHandleAndDomain(String provider, String handle, String domain);
