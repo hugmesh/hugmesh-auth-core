@@ -1,6 +1,6 @@
 # Manual release: build/test hugmesh-auth-core and publish the library jar to GitHub
 # Packages (Maven registry). Mirrors the build:test + deploy:maven stages in this repo's
-# .gitlab-ci.yml, ported to the GitHub Packages Maven registry for the hugmesh-net org.
+# .gitlab-ci.yml, ported to the GitHub Packages Maven registry for the hugmesh org.
 #
 # workflow_dispatch ONLY — intentionally never runs on push/tag. Stays fully inert until a
 # human enables it.
