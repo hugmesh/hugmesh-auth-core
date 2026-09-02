@@ -323,7 +323,19 @@ Verified against the current code (no invented gaps):
   (the default), so in dev/test/CI (and any prod deployment that hasn't flipped the flag)
   the fast-path JWT/homeserver-token revocation never reaches the gateway — only the
   authoritative Postgres row (`access_suspension`) is written
-  (`GatewayRevocationClient.java:49-53,168-196`).
+  (`GatewayRevocationClient.java:49-53,168-196`). **The library default stays `false`
+  deliberately** (issue #7 decision, 2026-09-01): the only runtime consumer of this bean,
+  admin-bff, binds the property in its own `application.yml` as
+  `${BROKER_GATEWAY_REVOCATION_ENABLED:false}`, so this `@Value` fallback is never even
+  consulted there — flipping it here would change nothing for admin-bff (which also pins
+  auth-core 2.4.2) while silently turning on gateway HTTP calls for any future consumer
+  that scans `net.hugmesh.authcore` without binding the property. The real switch is the
+  consumer deployment's `BROKER_GATEWAY_REVOCATION_ENABLED` env var (tracked
+  consumer-side in hugmesh-admin-bff-api). Both branches of the toggle ARE now covered
+  against a live listening stub gateway: `GatewayRevocationClientWireTest` proves
+  disabled ⇒ zero wire traffic even with a reachable gateway, and enabled ⇒ the real
+  POST/DELETE contract (key shapes, optional `reason`, 30-day TTL default substitution,
+  best-effort swallow of live 5xx responses).
 - **MFA BFF wiring not yet complete** — per the Roadmap below, the MFA store/verifier
   substrate (TOTP, WebAuthn, recovery codes) is fully landed here, but per-role MFA
   defaults, step-up enforcement in admin-bff, and the Casdoor MFA bridge for the opaque
