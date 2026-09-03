@@ -16,7 +16,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * changelog of its own, so the {@code allowlist} schema (changesets 003 + 220) is applied
  * from {@code allowlist-schema.sql} by a reactive {@link ConnectionFactoryInitializer} over
  * the same H2 mem store the repository reads. H2 runs in PostgreSQL-compat mode so the
- * derived-finder SQL exercises here as on Postgres. Each test class gets a UNIQUE db name.
+ * derived-finder SQL exercises here as on Postgres.
+ *
+ * <p>{@code DB_SEQ} increments once per config-bean INSTANCE, i.e. per APPLICATION CONTEXT —
+ * not per test class. Two test classes with identical context configuration share one cached
+ * context and therefore ONE database; give a class its own context-cache key (a
+ * {@code @TestPropertySource} marker, as {@code AccountStoreAllowlistGateTest} does) when it
+ * needs an isolated one.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class AllowlistTestDatabaseConfig {

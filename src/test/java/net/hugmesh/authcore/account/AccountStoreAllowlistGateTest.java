@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.r2dbc.test.autoconfigure.DataR2dbcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.TestPropertySource;
 import reactor.test.StepVerifier;
 
 import static org.mockito.Mockito.mock;
@@ -30,6 +31,14 @@ import static org.mockito.Mockito.mock;
  */
 @DataR2dbcTest
 @Import({AllowlistTestDatabaseConfig.class})
+// Distinct context-cache key. Without it this class and AllowlistRepositoryTest carry
+// IDENTICAL context configuration, so Spring hands both the SAME ApplicationContext and
+// therefore the SAME H2 mem database (AllowlistTestDatabaseConfig's DB_SEQ increments per
+// config-bean INSTANCE, not per test class), and @DataR2dbcTest applies no rollback here —
+// a row either class seeds would be visible to the other. Nothing collides today, but a
+// leaked row on a matching (provider, handle, domain) would MASK the very cross-brand
+// assertions below, which is the one failure this class exists to prevent.
+@TestPropertySource(properties = "authcore.test.slice=account-store-allowlist-gate")
 class AccountStoreAllowlistGateTest {
 
     private static final String BRAND_A = "brand-a";
@@ -80,6 +89,17 @@ class AccountStoreAllowlistGateTest {
      * The write path folds case ({@code invite}) and so does the read path ({@code isInvited}),
      * so a differently-cased registration is admitted on its OWN brand only — a fold that
      * ignored the domain would be a second way to cross brands.
+     *
+     * <p>Every spelling below is deliberately free of an upper-case {@code 'I'}. The gate's
+     * folds are a bare {@code toLowerCase()} — the DEFAULT-locale overload, unlike
+     * {@link AccountStore#idFor}, which uses {@link java.util.Locale#ROOT} for exactly this
+     * reason. Under a tr/az default locale an {@code 'I'} folds to a dotless {@code 'ı'}, so
+     * a spelling containing one would make the BRAND_B read miss on HANDLE rather than on
+     * DOMAIN and pass for the wrong reason — it would keep passing with the facade reverted to
+     * the unscoped {@code existsByProviderAndHandle}, silently losing the mutation this test
+     * exists to catch. Measured: with {@code "MIXEDCASE@EXAMPLE.TEST"} here and the facade
+     * mutated, a {@code -Duser.language=tr} run detects the mutation in 5 of 7 tests instead
+     * of 6.
      */
     @Test
     void caseFoldingDoesNotLeakAcrossBrands() {
@@ -88,7 +108,7 @@ class AccountStoreAllowlistGateTest {
 
         StepVerifier.create(store.isEmailInvited("mixedcase@example.test", BRAND_A))
                 .expectNext(true).verifyComplete();
-        StepVerifier.create(store.isEmailInvited("MIXEDCASE@EXAMPLE.TEST", BRAND_B))
+        StepVerifier.create(store.isEmailInvited("mixedCASE@example.TEST", BRAND_B))
                 .expectNext(false).verifyComplete();
     }
 
