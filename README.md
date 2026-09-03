@@ -229,8 +229,9 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   `insertIfAbsent(..., domain)`; existing rows back-fill to `"default"`. The registration-gate
   read is domain-scoped too (`existsByProviderAndHandleAndDomain`, surfaced as
   `AccountStore.isEmailInvited(email, domain)` / `isDiscordInvited(handle, domain)`); the
-  unscoped `existsByProviderAndHandle` overloads are **deprecated** and kept only for callers
-  not yet threaded with a requesting domain (see Known Gaps below).
+  unscoped `existsByProviderAndHandle` overloads are **deprecated** and now have no callers
+  left in the org — admin-bff (hugmesh/hugmesh-admin-bff-api#46) migrated the three request
+  handlers that used them onto the scoped gate (see Known Gaps below).
 - **Subject-level revocation (`GatewayRevocationClient.revokeSubject`)**: writes a
   `subject:<casdoorSub>` key so the gateway's `RevocationGatewayFilter` denies a user's
   live custody JWT immediately on role-revoke, instead of waiting out its natural TTL
@@ -307,16 +308,39 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
 
 ## Known Gaps / TODO
 Verified against the current code (no invented gaps):
-- **Registration gate: the scoped check exists, the BFF call sites are not migrated yet** —
-  this jar now offers the domain-scoped gate (`AllowlistRepository
-  .existsByProviderAndHandleAndDomain`, `AccountStore.isEmailInvited(email, domain)` /
-  `isDiscordInvited(handle, domain)`) and **deprecates** the unscoped overloads. Until the
-  consumers migrate, the cross-brand hole stays open at THEIR call sites: admin-bff's
-  `AuthController.registerGoogle` / `registerDiscord` and
-  `InternalAccountController#ensureAccount` still call the deprecated unscoped overloads,
-  because a *pre-authentication* registration request has no validated JWT and therefore no
-  `PrincipalDomain` — deciding where that domain comes from (request host, an explicit body
-  field, or a per-deployment property) is a BFF-side decision, not a library one.
+- **Registration gate: domain-scoped on both sides now; two deliberate residuals** —
+  the cross-brand gap this entry used to describe is CLOSED. This jar offers the domain-scoped
+  gate (`AllowlistRepository.existsByProviderAndHandleAndDomain`,
+  `AccountStore.isEmailInvited(email, domain)` / `isDiscordInvited(handle, domain)`) and
+  **deprecates** the unscoped overloads; the only consumer that called them, admin-bff,
+  migrated its three request handlers in hugmesh/hugmesh-admin-bff-api#46. What that migration
+  does is NOT uniform across those handlers, so state it exactly:
+  - **The two PUBLIC pre-auth handlers derive the domain server-side.**
+    `AuthController.registerGoogle` / `registerDiscord` pass
+    `RegistrationDomainResolver.forRegistration(auth)`: the forwarded token's *trusted* issuer
+    (strict membership of a configured, NON-EMPTY trusted-issuer set), else an
+    `app.tenancy.registration-domain` per-deployment pin, else the deployment's only known
+    brand (`"default"` on an untenanted install, which keeps single-tenant behaviour
+    unchanged), else **fail closed** on the `PrincipalDomain.NO_DOMAIN` sentinel, which begins
+    with a space and so matches no sanitized domain and no row. Never a request-body field and
+    never the `Host` header — a caller-chosen domain there would re-open this exact hole.
+  - **The INTERNAL invite read DOES honour a caller-supplied domain, on purpose.**
+    `InternalAccountController#allowlist` (`GET /bff/internal/allowlist/{provider}/{handle}`,
+    the invite-gate read the tracking issue mis-names `ensureAccount`) takes an optional
+    `?domain=` and `RegistrationDomainResolver.forInternalCaller` returns it **verbatim** — it
+    is NOT validated against `DomainRegistry` membership. That surface is mTLS +
+    `X-Internal-Token` guarded and carries no untrusted principal, so the trusted in-cluster
+    caller (user-bff, which holds the validated token that hop lost) is the party that knows
+    the brand; omitting the parameter degrades to the same fallback chain above, which is why
+    today's callers keep their single-brand answer. Its scoping therefore rests on the
+    internal-surface guard, not on server-side derivation. Gating `forInternalCaller` on
+    `DomainRegistry.isKnownDomain(...)` and failing closed otherwise is a cheap
+    defence-in-depth follow-up, and belongs to admin-bff, not this jar.
+  Also still open here: `existsByProviderAndHandle` / the 1-arg `isEmailInvited` /
+  `isDiscordInvited` remain **on the API surface**, `@Deprecated` but callable, so a future
+  call site can re-open the hole by picking the shorter overload. Deleting them is a breaking
+  library change that needs a version bump the org's Maven registry must publish before any
+  consumer can build again, so it is a deliberate follow-up, not part of this fix.
 - **Gateway revocation writes are a no-op unless explicitly enabled** —
   `GatewayRevocationClient.revokeCoarse` / `revokeSubject` / `clearCoarse` all short-circuit
   to a logged STUB (`Mono.empty()`) when `broker.gateway-revocation.enabled` is `false`
