@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -71,7 +72,7 @@ public class AccountStore {
         this.grants = grants;
         this.admins = new java.util.HashSet<>();
         for (String e : adminEmails.split(",")) {
-            String t = e.trim().toLowerCase();
+            String t = e.trim().toLowerCase(Locale.ROOT);
             if (!t.isEmpty()) admins.add(t);
         }
     }
@@ -127,12 +128,12 @@ public class AccountStore {
      * seed stamps and the changeset-220 back-fill wrote onto pre-existing rows.
      */
     public Mono<Boolean> isEmailInvited(String email, String domain) {
-        return allowlist.existsByProviderAndHandleAndDomain("google", email.toLowerCase(), domain);
+        return allowlist.existsByProviderAndHandleAndDomain("google", email.toLowerCase(Locale.ROOT), domain);
     }
 
     /** Registration gate (domain-scoped): whether {@code handle} is invited IN {@code domain}. */
     public Mono<Boolean> isDiscordInvited(String handle, String domain) {
-        return allowlist.existsByProviderAndHandleAndDomain("discord", handle.toLowerCase(), domain);
+        return allowlist.existsByProviderAndHandleAndDomain("discord", handle.toLowerCase(Locale.ROOT), domain);
     }
 
     /**
@@ -145,7 +146,7 @@ public class AccountStore {
      */
     @Deprecated
     public Mono<Boolean> isEmailInvited(String email) {
-        return allowlist.existsByProviderAndHandle("google", email.toLowerCase());
+        return allowlist.existsByProviderAndHandle("google", email.toLowerCase(Locale.ROOT));
     }
 
     /**
@@ -156,7 +157,7 @@ public class AccountStore {
      */
     @Deprecated
     public Mono<Boolean> isDiscordInvited(String handle) {
-        return allowlist.existsByProviderAndHandle("discord", handle.toLowerCase());
+        return allowlist.existsByProviderAndHandle("discord", handle.toLowerCase(Locale.ROOT));
     }
 
     /** Domain-scoped invite — stamps the invite row with {@code domain}. */
@@ -170,7 +171,7 @@ public class AccountStore {
     }
 
     private Mono<Void> invite(String provider, String handle, String domain) {
-        return allowlist.insertIfAbsent(provider, handle.toLowerCase(), domain).then();
+        return allowlist.insertIfAbsent(provider, handle.toLowerCase(Locale.ROOT), domain).then();
     }
 
     /** Domain-scoped revoke — only removes the row in the caller's domain. */
@@ -184,7 +185,7 @@ public class AccountStore {
     }
 
     private Mono<Void> revokeFromAllowlist(String provider, String handle, String domain) {
-        return allowlist.deleteByProviderAndHandleAndDomain(provider, handle.toLowerCase(), domain).then();
+        return allowlist.deleteByProviderAndHandleAndDomain(provider, handle.toLowerCase(Locale.ROOT), domain).then();
     }
 
     // ── Accounts (two-stage registration lifecycle) ────────────────────
@@ -422,7 +423,7 @@ public class AccountStore {
      */
     public Mono<List<String>> namespacesFor(Account a) {
         if (a.isAdmin()) return Mono.just(new ArrayList<>(NAMESPACES));
-        return grants.findByGranteeOrderByNamespace(a.id().toLowerCase())
+        return grants.findByGranteeOrderByNamespace(a.id().toLowerCase(Locale.ROOT))
                 .map(NamespaceGrant::namespace).collectList();
     }
 
@@ -460,12 +461,12 @@ public class AccountStore {
 
     /** Domain-scoped grant — stamps the row with {@code domain}. */
     public Mono<Void> grant(String user, String namespace, String domain) {
-        return grants.insertIfAbsent(user.toLowerCase(), namespace, domain).then();
+        return grants.insertIfAbsent(user.toLowerCase(Locale.ROOT), namespace, domain).then();
     }
 
     /** Domain-scoped revoke — only removes the row in the caller's domain. */
     public Mono<Void> revoke(String user, String namespace, String domain) {
-        return grants.deleteByGranteeAndNamespaceAndDomain(user.toLowerCase(), namespace, domain).then();
+        return grants.deleteByGranteeAndNamespaceAndDomain(user.toLowerCase(Locale.ROOT), namespace, domain).then();
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
