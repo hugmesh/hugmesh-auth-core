@@ -3,9 +3,11 @@ package net.hugmesh.authcore.account;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.util.List;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -197,5 +199,29 @@ class AccountStoreAllowlistLocaleTest {
                 .verifyComplete();
 
         verify(grants).deleteByGranteeAndNamespaceAndDomain("google:istanbul@example.test", "games", "brandx");
+    }
+
+    /**
+     * The grantee lookup folds {@code Account.id()} again. On a realistic account that id is
+     * already {@code Locale.ROOT}-folded by {@code idFor} / {@code ensureAccount}, so this fold is
+     * a no-op — but the site must still be {@code Locale.ROOT} so a caller-built Account with
+     * an upper-case id resolves the same grant rows on every host. Passing such an Account is
+     * what makes a bare-{@code toLowerCase()} regression at this site detectable (the stub
+     * keyed on the ASCII fold goes unmatched and the returned {@code Flux} is null).
+     */
+    @Test
+    void namespacesFor_foldsGranteeWithLocaleRoot() {
+        when(grants.findByGranteeOrderByNamespace("google:istanbul@example.test"))
+                .thenReturn(Flux.just(new NamespaceGrant(
+                        "google:istanbul@example.test", "games", "brandx", null)));
+
+        Account nonAdmin = new Account("google:ISTANBUL@EXAMPLE.TEST", "google",
+                "istanbul@example.test", true, List.of("user"));
+
+        StepVerifier.create(store("").namespacesFor(nonAdmin))
+                .expectNext(List.of("games"))
+                .verifyComplete();
+
+        verify(grants).findByGranteeOrderByNamespace("google:istanbul@example.test");
     }
 }
