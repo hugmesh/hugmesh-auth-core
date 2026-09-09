@@ -84,7 +84,9 @@ auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
   BffSession(+repo), NamespaceGrant(+repo). Self-contained; builds against commons + r2dbc.
 - ✅ `casdoor/` — Casdoor-admin client/config, OIDC token-exchange client (`OidcExchangeClient`,
   optionally routed through gated outbound mTLS via `OidcExchangeClientSsl`), BFF-custody
-  cipher (`BffCustodyCipher`), MFA challenge/step-up services, raw-JWT refresh.
+  cipher (`BffCustodyCipher`), MFA challenge/step-up services. (The former raw-JWT refresh
+  service was deleted — its held-token branch was unreachable and the re-mint now happens in
+  admin-bff's `POST /bff/internal/session/exchange`; nothing named `RawJwt*` remains.)
 - ✅ `mfa/` — TOTP, WebAuthn (webauthn4j), recovery codes, enrollment, secret cipher, the
   R2DBC factor/credential/challenge rows + repositories, and `MfaPreconditionBootGuard`
   (see **MFA precondition startup check** below).
@@ -189,7 +191,7 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
 `spotbugs/exclude-filter.xml` triaged the 8 `EI_EXPOSE_REP2` findings (see Known Gaps).
 
 ## Current State
-- **Version 2.5.0** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
+- **Version 2.5.1** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
   Spring Cloud 2025.1.2 / Java 25 LTS** (eclipse-temurin:25), inherited via
   `hugmesh-parent` (metapom) **2.8.0** (which runs **PMD + Checkstyle + SpotBugs** during
   `verify` and pins **testcontainers 2.0.5**; PMD and Checkstyle fail on violation, and — as
@@ -360,10 +362,19 @@ Verified against the current code (no invented gaps):
   disabled ⇒ zero wire traffic even with a reachable gateway, and enabled ⇒ the real
   POST/DELETE contract (key shapes, optional `reason`, 30-day TTL default substitution,
   best-effort swallow of live 5xx responses).
-- **MFA BFF wiring not yet complete** — per the Roadmap below, the MFA store/verifier
-  substrate (TOTP, WebAuthn, recovery codes) is fully landed here, but per-role MFA
-  defaults, step-up enforcement in admin-bff, and the Casdoor MFA bridge for the opaque
-  `bff_`-session flow are still outstanding BFF-side work, not in this jar.
+- **MFA step-up is wired end to end but ships DARK** — everything this jar owns is in
+  place: `BffStoredMfaFactorVerifier` is the `@Component @Primary` `MfaFactorVerifier`
+  (so `MfaChallengeConfig`'s `@ConditionalOnMissingBean` deny-all default never wins), and
+  `BffCookieAuthenticationWebFilter` grants `MFA_SATISFIED` from the session's
+  freshness-validated `mfa_satisfied_at` (`AccountStore.mfaStateOf`). The consumer-side
+  enforcement landed too (admin-bff's nine gates behind `AbstractStepUpGate`, mod-bff's
+  write-effect gate, forum-bff's admin/moderation routes; the `MFA=1` switch is
+  hugmesh-generator#70). What is NOT flipped: `app.mfa.enabled` defaults to `false`
+  org-wide, and the reference-cluster flip is an operator step (generator
+  `docs/MFA-ROLLOUT.md` §3 step 6, tracked on hugmesh-generator#47). The one remaining
+  piece of *design*, per-role MFA defaults, lives in hugmesh-generator's route-access seed
+  (its `mfa_required` predicate is keyed on `url_pattern`, never on `role`) — not in
+  this jar.
 - **SSO end-to-end + e2e tests** — the live Casdoor OIDC (PKCE) → opaque `bff_` session
   flow and the gateway exchange-filter path are called out in the Roadmap as not yet
   covered by end-to-end tests.
@@ -432,11 +443,12 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   shared implementation.
 - **SSO end-to-end + e2e**: support the live Casdoor OIDC (PKCE) → opaque `bff_` session
   flow and the gateway exchange-filter path, with end-to-end tests.
-- **MFA BFF wiring** *(substrate done)*: the shared MFA store/verifier infrastructure
-  (TOTP, WebAuthn, recovery codes, `FactorType`/`CeremonyType` enums, DB-generated PKs) is
-  fully landed in this library (PRs #4, #6). What remains is BFF-side wiring: per-role MFA
-  defaults, step-up enforcement in admin-bff, and the Casdoor MFA bridge for the opaque
-  `bff_`-session flow.
+- **MFA BFF wiring** *(done here; dark by default)*: the shared MFA store/verifier
+  infrastructure (TOTP, WebAuthn, recovery codes, `FactorType`/`CeremonyType` enums,
+  DB-generated PKs) and the `bff_`-session bridge are landed in this library, and the
+  BFF-side step-up enforcement landed in admin-bff / mod-bff / forum-bff. What remains is
+  outside this jar: the operator flip of `app.mfa.enabled`, and per-role MFA defaults in
+  hugmesh-generator's route-access seed (see Known Gaps above).
 - Track the wider platform roadmap where it touches account/session/MFA: multi-tenancy
   superadmin, device-license registry, desktop app governance (SSO sudo), and OWASP
   pen-test + nuclei in CI.
