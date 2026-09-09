@@ -23,10 +23,44 @@ import java.time.LocalDateTime;
  * 2.0.0 consumer running before band-180 reads them as null. Timestamps are {@code timestamp}
  * (no zone) → {@code LocalDateTime}, matching the facade's prior binds.
  *
- * TODO: no column here (or on {@link Account}) carries the Casdoor UUID {@code sub} — only
- * the folded {@code provider:handle} id is persisted. A consumer that needs to key off the
- * real Casdoor subject (e.g. a gateway introspect response) would need a new nullable
- * {@code casdoor_sub} column + a version bump here; not yet needed by any landed feature.
+ * <p><b>Casdoor UUID {@code sub} — asked and ANSWERED; deliberately NOT carried here.</b>
+ * This class used to carry an open question ("a consumer that needs the real Casdoor subject
+ * would need a new {@code casdoor_sub} column + a version bump here; not yet needed by any
+ * landed feature"). A consumer since appeared and the need is fully served WITHOUT a change
+ * to this module, so the question is closed rather than pending:
+ *
+ * <ul>
+ *   <li><b>Who needed it:</b> the gateway's {@code GatewayRouteAccessFilter}. It matches
+ *       {@code casdoor_user} route pins against a per-user identity set that, for a real
+ *       Casdoor-JWT carrier, includes the raw UUID {@code sub}. For a native-login
+ *       {@code bff_} session carrier that set was built only from the durable account id
+ *       ({@code casdoor:<handle>}), so a UUID-form pin matched the JWT carrier but never the
+ *       SAME human on a session cookie — a UUID ALLOW pin wrongly denied them and, worse, a
+ *       UUID DENY pin (a targeted ban) failed OPEN. (The "A5 part-B" cross-carrier gap.)</li>
+ *   <li><b>Where it landed:</b> admin-bff, on the {@code account} table — Liquibase changeset
+ *       {@code 292-account-casdoor-sub} adds a nullable, non-unique {@code account.casdoor_sub},
+ *       stamped from the one place the raw id_token is decoded
+ *       ({@code InternalAccountController#ensureAccount}, {@code provider="casdoor"}) through
+ *       {@code AccountCasdoorSubService}, and surfaced by
+ *       {@code /bff/internal/session/introspect} as a nullable {@code casdoorSub} field that
+ *       the gateway folds into the pin-match set ({@code BffSessionAuthFilter.SessionDetails}).</li>
+ *   <li><b>Why NOT on this record:</b> the subject belongs to the <i>account</i>, not to a
+ *       session — one human's sessions all resolve to the same account id, and introspect
+ *       already reads the value by {@code accountId}, so a per-session copy would be pure
+ *       denormalisation with a staleness window and no new capability. It is not on
+ *       {@link Account}/{@code AccountRow} either, by the same deliberate call recorded on
+ *       admin-bff's {@code AccountCasdoorSubRow}: auth-core is a separately-versioned shared
+ *       dependency, so a field here would force a version-bump chain through every consumer
+ *       for a column exactly one of them writes and reads. admin-bff instead maps a narrow
+ *       {@code (id, casdoor_sub)} projection over the same physical table.</li>
+ * </ul>
+ *
+ * <p>Consequences for THIS module, both already true: {@link AccountStore}'s INSERT path must
+ * keep leaving {@code account.casdoor_sub} alone (which is why changeset 292 is nullable with
+ * no default — a NOT NULL there would fail every account creation from here), and no query in
+ * this module may {@code SELECT *} over {@code account} or {@code bff_session}, so an
+ * unmapped consumer-owned column stays invisible to it. See hugmesh-auth-core#5, whose first
+ * bullet this resolves.
  */
 @Table("bff_session")
 public record BffSession(

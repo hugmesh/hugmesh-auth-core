@@ -376,12 +376,27 @@ Verified against the current code (no invented gaps):
   (mirroring the gateway's own `BffSessionAuthFilter`) instead of this class. Documented as
   an intentional, tracked follow-up in the filter's own class-level Javadoc
   (`config/BffCookieAuthenticationWebFilter.java`); not yet implemented anywhere.
-- **No column carries the Casdoor UUID `sub`** — `Account` is `{id, provider, handle,
-  registrationComplete, roles}` and `BffSession` has no `casdoor_sub`/subject column, so
-  nothing derived from the opaque `bff_`-session model can key off the Casdoor UUID subject
-  today (only the folded provider:handle id). Surfacing the UUID sub (e.g. for a gateway
-  introspect response) would need a new nullable schema column + `AccountStore` plumbing +
-  a version bump here, coordinated with whichever consumer needs it.
+- **The Casdoor UUID `sub` is deliberately NOT carried by this module — resolved, not
+  pending.** This list used to ask whether a consumer would ever need the raw Casdoor
+  subject (`Account` is `{id, provider, handle, registrationComplete, roles}` and
+  `BffSession` has no subject column, so only the folded `provider:handle` id is persisted
+  here). One did — the gateway's `GatewayRouteAccessFilter`, which matched UUID-form
+  `casdoor_user` route pins for a Casdoor-JWT carrier but never for the same human on a
+  native-login `bff_` session, so a UUID ALLOW pin wrongly denied them and a UUID DENY pin
+  (a targeted ban) failed OPEN. It was served **entirely outside auth-core**: admin-bff's
+  Liquibase changeset `292-account-casdoor-sub` adds a nullable, non-unique
+  `account.casdoor_sub`, stamped at `InternalAccountController#ensureAccount` via
+  `AccountCasdoorSubService` and surfaced by `/bff/internal/session/introspect` as a
+  nullable `casdoorSub` the gateway folds into its pin-match identity set
+  (`BffSessionAuthFilter.SessionDetails`). auth-core keeps no field for it on purpose: it is
+  account-scoped rather than session-scoped, and this is a separately-versioned shared
+  dependency, so a field here would force a version-bump chain through every consumer for a
+  column exactly one of them writes and reads — admin-bff maps a narrow `(id, casdoor_sub)`
+  projection over the same physical table instead. The two standing obligations on this side
+  are already met: `AccountStore`'s INSERT never writes the column (hence 292 being nullable
+  with no default — NOT NULL would fail every account creation from here), and no query in
+  this module does `SELECT *` over `account`/`bff_session`, so the consumer-owned column
+  stays invisible to it. Tracked as the first bullet of hugmesh-auth-core#5.
 - **SpotBugs is genuinely fail-mode, and `./mvnw -o clean verify` is now GREEN — re-verified
   by running the real build** (`./mvnw -o clean verify`, 2026-08-20, against the
   `hugmesh-parent` 2.8.0 / `hugmesh-build-config` 0.5.0 this module resolves): 450 tests,
