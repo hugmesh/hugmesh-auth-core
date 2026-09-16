@@ -207,6 +207,13 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   (AES-256-GCM); MFA via **webauthn4j 0.31.7** (WebAuthn) + TOTP. webauthn4j 0.31 migrated
   internally to Jackson 3 (`tools.jackson`), aligned with this module's Boot 4 / Jackson 3
   stack; `WebAuthnService` uses the `CredentialRecord` API.
+- **Username gate presents a Casdoor ROLE_SERVICE bearer (2.5.1)**: `FederationUsernameClient`
+  takes an optional `Supplier<Mono<String>>` service bearer (5-arg constructor; the 4-arg one
+  remains) and `FederationUsernameConfig` wires `casdoor/CasdoorServiceTokenClient` — a cached
+  OAuth2 client-credentials mint against `POST /api/login/oauth/access_token` — from
+  `federation.username-gate.service-bearer.*` (defaults: `app.casdoor.platform.*`), plus the
+  gated `hugmesh.mtls.client.*` outbound connector. See Known Gaps for why the previous
+  header-only credential could never authenticate against federation-api.
 - **BFF JWT custody (2.1.0)**: `BffSession` carries the OIDC-token-custody columns
   (`access_token_enc` / `refresh_token_enc` / `access_token_expires_at` /
   `custody_updated_at`, admin-bff band-180; alongside the changeset-150 MFA columns
@@ -408,6 +415,33 @@ Verified against the current code (no invented gaps):
   with no default — NOT NULL would fail every account creation from here), and no query in
   this module does `SELECT *` over `account`/`bff_session`, so the consumer-owned column
   stays invisible to it. Tracked as the first bullet of hugmesh-auth-core#5.
+- **Username-gate credential — was dead on arrival; now a ROLE_SERVICE bearer (second bullet
+  of hugmesh-auth-core#5).** Until this change `FederationUsernameClient` could present only the
+  shared `X-Internal-Token` header, and #5 described the Bearer path as "config-driven" — it was
+  not: nothing in this jar minted or sent a bearer. hugmesh-federation-api authenticates
+  `/api/federation/username/**` exclusively as an OAuth2 resource server (its `SecurityConfig`
+  route rule is `hasAnyRole("SERVICE","ADMIN","SUPERADMIN")` over a JWT-only
+  `oauth2ResourceServer`) and has no `X-Internal-Token` filter anywhere, so with
+  `FEDERATION_USERNAME_GATE_ENABLED=true` every check would 401, fail closed to
+  `federation-unavailable`, exhaust `UsernameGate`'s 9 disambiguation attempts and refuse
+  every provider-derived username mint (admin-bff maps that to a 422). The gate is OFF in every
+  committed deployment, so this was a trap on the flag, not a live outage. Now
+  `CasdoorServiceTokenClient` (the org's cached client-credentials mint — the first SHARED copy
+  of the supplier hugmesh-actions and admin-bff each carry privately) supplies
+  `Authorization: Bearer` per call; `FederationUsernameConfig` wires it from
+  `federation.username-gate.service-bearer.{casdoor-base-url,client-id,client-secret}`, each
+  defaulting to the platform-wide `app.casdoor.platform.*`, and routes the hop through the
+  jar's gated `hugmesh.mtls.client.*` connector (`OidcExchangeClientSsl`) because the
+  in-cluster federation-api is `https://` with `client-auth=need`. An enabled gate with no
+  bearer still boots but WARNs at startup; a bearer mint failure, an empty supplier, an empty
+  2xx body and a non-2xx all fail closed. The 4-arg constructor and the legacy header stay
+  (wire-compatible; the header is stamped alongside the bearer when configured). **Still
+  consumer-side, not this jar** — tracked as hugmesh-generator#376: admin-bff pins 2.4.2 and
+  must adopt a published build carrying this; its manifest sets neither
+  `APP_CASDOOR_PLATFORM_*` nor `HUGMESH_MTLS_CLIENT_ENABLED`; and the Casdoor application
+  named by `client-id` must hold the `service` role or federation answers 403. No version bump
+  here: 2.5.1 is unpublished (hugmesh-generator#347 decision 15 is still open) and no consumer
+  pins it.
 - **SpotBugs is genuinely fail-mode, and `./mvnw -o clean verify` is now GREEN — re-verified
   by running the real build** (`./mvnw -o clean verify`, 2026-08-20, against the
   `hugmesh-parent` 2.8.0 / `hugmesh-build-config` 0.5.0 this module resolves): 450 tests,
