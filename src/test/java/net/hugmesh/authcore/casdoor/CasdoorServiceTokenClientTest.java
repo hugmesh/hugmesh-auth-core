@@ -105,7 +105,9 @@ class CasdoorServiceTokenClientTest {
         assertThat(rec.requests).hasSize(1);
         ClientRequest req = rec.requests.get(0);
         assertThat(req.method()).isEqualTo(HttpMethod.POST);
-        assertThat(req.url().getPath()).isEqualTo(CasdoorServiceTokenClient.TOKEN_PATH);
+        // The LITERAL path Casdoor serves, not the constant: asserting against TOKEN_PATH itself
+        // is a tautology (a mutated constant still passed 9/9 — measured 2026-09-16).
+        assertThat(req.url().getPath()).isEqualTo("/api/login/oauth/access_token");
         assertThat(req.headers().getContentType()).isEqualTo(MediaType.APPLICATION_FORM_URLENCODED);
         String form = formBodyOf(req);
         assertThat(form).contains("grant_type=client_credentials");
