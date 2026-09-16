@@ -72,8 +72,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>A self-signed certificate is generated at test time with BouncyCastle (already a compile
  * dependency) and used as the server identity, the trust anchor and the client identity at once;
  * the stores live in a JUnit temp dir. The negative control runs the identical stores and peer with
- * the gate OFF: the handshake is refused before any credential is read and the check fails CLOSED,
- * which proves the gate is load-bearing rather than decorative.
+ * the gate OFF: the config then hands out Boot's plain connector, which carries neither our client
+ * certificate nor a trust anchor for the self-signed peer, so OUR side aborts the handshake on the
+ * server certificate (client-side PKIX path building fails — {@code certificate_unknown} in the run
+ * log) before a client certificate or the bearer is ever sent; nothing reaches the handler and the
+ * check fails CLOSED. The peer's {@code REQUIRE} would refuse a certificate-less client too, but the
+ * handshake never gets that far — client-certificate presentation is pinned by the positive case's
+ * {@code PEER_SUBJECT} assertion, not by this control. Either way the gate is load-bearing rather
+ * than decorative.
  */
 class FederationUsernameMtlsWireTest {
 
@@ -255,8 +261,9 @@ class FederationUsernameMtlsWireTest {
     }
 
     @Test
-    @DisplayName("gate OFF against the SAME client-auth=need peer: the handshake is refused before any "
-            + "credential is read, and the check fails CLOSED")
+    @DisplayName("gate OFF against the SAME https peer: the plain connector trusts no self-signed cert, so "
+            + "OUR side aborts the handshake (client-side PKIX) before any credential is sent, and the check "
+            + "fails CLOSED")
     void mtlsOff_sameStoresAndPeer_failsClosed() {
         runner(false).run(ctx -> {
             assertThat(ctx).hasNotFailed();
@@ -267,7 +274,9 @@ class FederationUsernameMtlsWireTest {
             assertThat(av).isNotNull();
             assertThat(av.available()).isFalse();
             assertThat(av.reason()).isEqualTo("federation-unavailable");
-            // The mint itself still succeeded (plain http needs no gate) — it is the TLS hop that fails.
+            // The mint itself still succeeded (plain http needs no gate) — it is the TLS hop that fails, on
+            // OUR side: no trust anchor for the peer's self-signed certificate, so no client certificate or
+            // bearer was ever offered for the peer's REQUIRE to judge.
             assertThat(MINTS.get()).isEqualTo(1);
             assertThat(FEDERATION_CALLS.get()).as("no request ever reached the handler").isZero();
         });
