@@ -52,6 +52,16 @@
       <artifactId>reactor-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- test: ReleaseMetadataGuardTest PARSES .github/workflows/release.yml rather than
+         grepping it — a guard that matches one spelling of a config file fails open on every
+         other spelling of the same meaning. Declared explicitly (version managed by the Boot
+         BOM via hugmesh-parent) instead of leaning on the copy spring-boot-starter drags in,
+         so the guard's own foundation cannot disappear in a transitive-dependency change. -->
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- commons test-support base class (PostgresTestSupport) for the Testcontainers-Postgres
          MFA-repo data slices: gen_random_uuid()/INSERT ... RETURNING (the DB-generated-UUID-PK
          migration) do NOT work on H2, so those slices run on REAL Postgres. The testcontainers

@@ -6,6 +6,9 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -13,6 +16,11 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,6 +51,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       deliberate edit that also updates this guard.</li>
  * </ol>
  *
+ * <p><b>Why this parses the workflow instead of grepping it.</b> The first cut of this class
+ * string-matched {@code release.yml}, and two adversarial reviews showed the same failure
+ * mode from opposite ends: a guard that matches one SPELLING of a config file fails OPEN on
+ * every other spelling of the same meaning. Both were measured green against a reverted
+ * workflow. (a) The trigger check blacklisted only {@code "\n  push:"} and
+ * {@code "\n    push:"}, so the flow forms {@code on: [push, workflow_dispatch]} and
+ * {@code on: {workflow_dispatch: {}, push: {tags: [v*]}}}, the quoted key {@code "push":},
+ * and the {@code release:}/{@code schedule:} triggers all sailed through — every one of them
+ * publishes without a human. (b) The deploy-target check ran on the RAW file text, so
+ * deleting {@code -DaltDeploymentRepository} from the {@code run:} line stayed green as long
+ * as the flag survived in the 10-line comment block that sits directly above it — i.e. the
+ * exact defect this guard exists to pin, silently restored. So: both checks now read the
+ * PARSED document. Comments do not exist after parsing, and every YAML spelling of a
+ * trigger collapses to the same key set. Note {@code on:} is a YAML 1.1 boolean, which is
+ * why {@link #triggerNames} looks up {@link Boolean#TRUE} as well as {@code "on"}.
+ *
  * <p>Reads the repository files directly: surefire runs with the project basedir as its
  * working directory, and {@code basedir} is also exported as a system property.
  */
@@ -60,6 +84,11 @@ class ReleaseMetadataGuardTest {
     private static final String EXPECTED_DEPLOY_OVERRIDE =
             "-DaltDeploymentRepository=github::default::https://maven.pkg.github.com/";
 
+    /** The only trigger this workflow may carry. Anything else publishes without a human. */
+    private static final Set<String> ONLY_ALLOWED_TRIGGER = Set.of("workflow_dispatch");
+
+    private static final String RELEASE_WORKFLOW = ".github/workflows/release.yml";
+
     private static Path repoRoot() {
         return Path.of(System.getProperty("basedir", System.getProperty("user.dir", ".")));
     }
@@ -68,6 +97,81 @@ class ReleaseMetadataGuardTest {
         Path p = repoRoot().resolve(relative);
         assertThat(p).as("%s must exist — it is part of the release contract", relative).exists();
         return Files.readString(p, StandardCharsets.UTF_8);
+    }
+
+    /** The release workflow as a parsed document. Comments are gone; spelling is normalised. */
+    private static Map<?, ?> releaseWorkflow() throws Exception {
+        Object doc = new Yaml(new SafeConstructor(new LoaderOptions())).load(read(RELEASE_WORKFLOW));
+        assertThat(doc)
+                .as("%s must parse as a YAML mapping — GitHub Actions cannot run it otherwise",
+                        RELEASE_WORKFLOW)
+                .isInstanceOf(Map.class);
+        return (Map<?, ?>) doc;
+    }
+
+    /**
+     * The workflow's trigger names, whatever YAML shape they were written in.
+     *
+     * <p>{@code on:} is an unquoted YAML 1.1 boolean, so the parser hands it back under the key
+     * {@link Boolean#TRUE}; {@code "on":} comes back as the string. Both are accepted here, and
+     * the value may be a scalar ({@code on: push}), a sequence ({@code on: [push, ...]} or a
+     * block list) or a mapping ({@code on: {push: {...}}} or a block mapping) — all three
+     * collapse to the same set of names.
+     */
+    private static Set<String> triggerNames(Map<?, ?> workflow) {
+        Object on = workflow.containsKey(Boolean.TRUE) ? workflow.get(Boolean.TRUE) : workflow.get("on");
+        assertThat(on)
+                .as("%s declares no `on:` block — a workflow with no trigger is not the shape "
+                        + "this guard knows how to check, so fail rather than pass vacuously",
+                        RELEASE_WORKFLOW)
+                .isNotNull();
+
+        Set<String> names = new LinkedHashSet<>();
+        if (on instanceof Map<?, ?> m) {
+            m.keySet().forEach(k -> names.add(String.valueOf(k)));
+        } else if (on instanceof Iterable<?> it) {
+            it.forEach(e -> {
+                // A block sequence entry may itself be a mapping: `- push: {branches: [main]}`.
+                if (e instanceof Map<?, ?> em) {
+                    em.keySet().forEach(k -> names.add(String.valueOf(k)));
+                } else {
+                    names.add(String.valueOf(e));
+                }
+            });
+        } else {
+            names.add(String.valueOf(on));
+        }
+        // `on: [on, push]` would round-trip a boolean back out; normalise it to its spelling.
+        names.remove("true");
+        if (String.valueOf(on).equals("true")) {
+            names.add("on");
+        }
+        return names;
+    }
+
+    /**
+     * Every shell command the workflow actually runs, in order. Read off the parsed document,
+     * so a flag that survives only in a YAML comment is NOT here — which is the point.
+     */
+    private static List<String> runCommands(Map<?, ?> workflow) {
+        List<String> commands = new ArrayList<>();
+        Object jobs = workflow.get("jobs");
+        assertThat(jobs).as("%s declares no jobs", RELEASE_WORKFLOW).isInstanceOf(Map.class);
+        for (Object job : ((Map<?, ?>) jobs).values()) {
+            if (!(job instanceof Map<?, ?> jobMap)) {
+                continue;
+            }
+            Object steps = jobMap.get("steps");
+            if (!(steps instanceof Iterable<?> stepList)) {
+                continue;
+            }
+            for (Object step : stepList) {
+                if (step instanceof Map<?, ?> stepMap && stepMap.get("run") instanceof String run) {
+                    commands.add(run);
+                }
+            }
+        }
+        return commands;
     }
 
     /** The project's OWN version: the {@code <version>} that is a direct child of {@code <project>}. */
@@ -121,39 +225,50 @@ class ReleaseMetadataGuardTest {
     @Test
     @DisplayName("the release workflow deploys to GitHub Packages, not the inherited GitLab target")
     void releaseWorkflowOverridesTheInheritedGitlabDeployTarget() throws Exception {
-        String wf = read(".github/workflows/release.yml");
-        assertThat(wf)
-                .as("the deploy step must override the inherited distributionManagement. Without "
-                        + "%s it deploys to server id 'gitlab-maven' at the literal, "
-                        + "uninterpolated ${env.CI_API_V4_URL}/... URL, with credentials that were "
-                        + "provisioned for the 'github' id. See RELEASING.md §3.1.",
-                        EXPECTED_DEPLOY_OVERRIDE)
-                .contains(EXPECTED_DEPLOY_OVERRIDE);
-        // The override must name THIS repository, not a hand-typed sibling coordinate.
-        assertThat(wf)
-                .as("the altDeploymentRepository URL must resolve to this repo — "
-                        + "${{ github.repository }} or the literal hugmesh/hugmesh-auth-core")
-                .satisfiesAnyOf(
-                        s -> assertThat(s).contains(EXPECTED_DEPLOY_OVERRIDE + "${{ github.repository }}"),
-                        s -> assertThat(s).contains(EXPECTED_DEPLOY_OVERRIDE + "hugmesh/hugmesh-auth-core"));
+        List<String> runs = runCommands(releaseWorkflow());
+        // `\bdeploy\b` is case-sensitive on purpose: it matches the `deploy` lifecycle phase and
+        // the `deploy:deploy-file` goal, and does NOT match `-DaltDeploymentRepository`.
+        List<String> deploys = runs.stream().filter(c -> c.matches("(?s).*\\bdeploy\\b.*")).toList();
+        assertThat(deploys)
+                .as("%s runs no deploy command at all — either the publish step was removed, or "
+                        + "it is no longer a `run:` step this guard can see. Parsed run commands: %s",
+                        RELEASE_WORKFLOW, runs)
+                .isNotEmpty();
+
+        for (String deploy : deploys) {
+            assertThat(deploy)
+                    .as("the deploy step must override the inherited distributionManagement. "
+                            + "Without %s it deploys to server id 'gitlab-maven' at the literal, "
+                            + "uninterpolated ${env.CI_API_V4_URL}/... URL, with credentials that "
+                            + "were provisioned for the 'github' id. See RELEASING.md §3.1. "
+                            + "Offending command: %s",
+                            EXPECTED_DEPLOY_OVERRIDE, deploy)
+                    .contains(EXPECTED_DEPLOY_OVERRIDE);
+            // The override must name THIS repository, not a hand-typed sibling coordinate.
+            assertThat(deploy)
+                    .as("the altDeploymentRepository URL must resolve to this repo — "
+                            + "${{ github.repository }} or the literal hugmesh/hugmesh-auth-core. "
+                            + "Offending command: %s", deploy)
+                    .satisfiesAnyOf(
+                            s -> assertThat(s).contains(EXPECTED_DEPLOY_OVERRIDE + "${{ github.repository }}"),
+                            s -> assertThat(s).contains(EXPECTED_DEPLOY_OVERRIDE + "hugmesh/hugmesh-auth-core"));
+        }
     }
 
     @Test
     @DisplayName("the release workflow is workflow_dispatch-only — it never publishes on its own")
     void releaseWorkflowNeverFiresOnPushOrTag() throws Exception {
-        String wf = read(".github/workflows/release.yml");
-        String body = wf.lines()
-                .filter(l -> !l.stripLeading().startsWith("#"))
-                .reduce("", (a, b) -> a + "\n" + b);
-        assertThat(body)
-                .as("release.yml must stay workflow_dispatch-only. Publish-on-merge is exactly "
-                        + "what made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin.")
-                .contains("workflow_dispatch");
-        assertThat(body)
-                .as("release.yml gained a push/tag trigger — that republishes whatever version "
-                        + "pom.xml happens to hold, over an already-published coordinate. If this "
-                        + "is deliberate, update this guard in the same change.")
-                .doesNotContain("\n  push:")
-                .doesNotContain("\n    push:");
+        Set<String> triggers = triggerNames(releaseWorkflow());
+        // An ALLOWLIST, not a blacklist of push spellings: any trigger other than
+        // workflow_dispatch — push, pull_request, release, schedule, workflow_run,
+        // repository_dispatch — publishes whatever version pom.xml happens to hold at the
+        // time, over an already-published coordinate.
+        assertThat(triggers)
+                .as("release.yml must stay workflow_dispatch-only; it declares %s. "
+                        + "Publish-on-merge is exactly what made 2.4.1 a mutable coordinate and "
+                        + "forced the 2.4.2 re-pin. If a new trigger is deliberate, widen "
+                        + "ONLY_ALLOWED_TRIGGER in the same change and say why in RELEASING.md.",
+                        triggers)
+                .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
     }
 }

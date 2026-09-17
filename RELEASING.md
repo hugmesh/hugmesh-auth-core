@@ -31,6 +31,22 @@ Keep the three version statements in lockstep — `pom.xml`, the `**Version X.Y.
 landed in the pom at `fe2bf3a` and in the README only at `dba8a82`);
 `ReleaseMetadataGuardTest` now fails the build on that drift.
 
+**What `ReleaseMetadataGuardTest` enforces, and why it PARSES `release.yml` rather than
+grepping it.** Four things: the three version statements agree; the deploy step carries
+`-DaltDeploymentRepository` pointed at *this* repository (§3.1); and the workflow's trigger
+set is exactly `{workflow_dispatch}`. The first cut of that class string-matched the
+workflow text, and two adversarial reviews found the same failure mode from opposite ends —
+a guard that matches one *spelling* of a config file fails open on every other spelling of
+the same meaning. Measured green against a reverted workflow: `on: [push, workflow_dispatch]`,
+`on: {workflow_dispatch: {}, push: {tags: [v*]}}`, a quoted `"push":` key, and `release:` /
+`schedule:` triggers all evaded the trigger check, and deleting the flag from the `run:` line
+evaded the deploy check as long as it survived in the comment block above it. Both checks now
+read the **parsed** document: comments do not exist after parsing, and every YAML spelling of
+a trigger collapses to the same key set. The trigger check is an allowlist
+(`ONLY_ALLOWED_TRIGGER`), not a blacklist of `push` spellings. **If a new trigger is ever
+deliberate, widen that constant in the same change and record why here** — the whole point is
+that publish-on-its-own cannot arrive as a silent edit.
+
 ## 2. The two publish paths this repo carries
 
 | path | file | target | state measured 2026-09-16 |
@@ -154,6 +170,7 @@ constructor alongside the new 5-arg one.
 - [ ] `./mvnw -B -ntp verify` green **with Docker available** (the MFA repo slices run on real
       Postgres via Testcontainers; without Docker they are the only thing that drops out).
 - [ ] §3.2 resolved — the upstream chain published and a CI-only resolution route agreed.
+- [ ] `Release` workflow still `workflow_dispatch`-only — `ONLY_ALLOWED_TRIGGER` unwidened.
 - [ ] `Release` workflow run from the GitHub UI (`workflow_dispatch`; it never runs on push).
 - [ ] The published coordinate actually fetched back once, by a consumer, before any pin moves.
 - [ ] `m2-bootstrap.sh` `PINS` row added and `test-m2-bootstrap.sh` run.
