@@ -312,8 +312,14 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   gateway; the SCG-5 route-namespace move
   (`spring.cloud.gateway.routes` → `spring.cloud.gateway.server.webflux.routes`) is a
   gateway/generator concern and does not touch this module.
-- CI is **GitLab** (no GitHub Actions). Single `main` branch; no in-flight feature
-  branches or open PRs at time of writing.
+- **Release/CI, corrected 2026-09-16 — this bullet used to read "CI is GitLab (no GitHub
+  Actions)", and both halves are now wrong.** There IS a GitHub Actions workflow
+  (`.github/workflows/release.yml`, `workflow_dispatch`-only, **zero runs to date**), and the
+  GitLab path is the one that cannot run: no repo carries a GitLab remote and
+  `gitlab.hugmesh.net` does not resolve (that host is deployed BY the mesh, see
+  `hugmesh-generator/specs/cluster/apps/03-gitlab.yaml`). Single `main` branch. The measured
+  release procedure, what still blocks a publish, and the consumer chain are in
+  [`RELEASING.md`](RELEASING.md); per-version notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Known Gaps / TODO
 Verified against the current code (no invented gaps):
