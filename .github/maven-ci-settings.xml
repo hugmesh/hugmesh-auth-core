@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CI-ONLY Maven settings for the GitHub Packages publish chain. Passed explicitly with
+  `-s .github/maven-ci-settings.xml` by .github/workflows/release.yml and by NOTHING else.
+
+  WHY THIS FILE EXISTS INSTEAD OF A <repositories> BLOCK IN pom.xml
+  ================================================================
+  maven.pkg.github.com requires authentication even to READ. Measured 2026-09-17 from a
+  developer box, against a coordinate that may or may not exist — the point is the status
+  code, which is identical either way:
+
+      $ curl -s -o /dev/null -w '%{http_code}\n' \
+          https://maven.pkg.github.com/hugmesh/hugmesh-parent/net/hugmesh/hugmesh-parent/2.8.0/hugmesh-parent-2.8.0.pom
+      401
+      $ curl ... -H "Authorization: Bearer $(gh auth token)" ...   # classic token, no read:packages
+      401
+
+  So declaring that URL in pom.xml would make EVERY unauthenticated build fail — a
+  developer's `./mvnw verify`, and hugmesh-generator/tests/stack/m2-bootstrap.sh, which is
+  how the compose lane builds these libraries today (from pinned SHAs, deliberately NOT
+  from a registry). Decision 27 keeps that source-build mechanism unchanged. The publish
+  path is prepared, not switched on. A settings file passed with `-s` is the only shape
+  that adds a repository for CI without adding one for everybody.
+
+  ReleaseMetadataGuardTest fails the build if maven.pkg.github.com ever appears in pom.xml
+  or in the repo-root settings.xml (the GitLab one). That guard is the thing standing
+  between this design and someone "simplifying" it back into the pom.
+
+  BOTH <repositories> AND <pluginRepositories>, deliberately
+  =========================================================
+  net.hugmesh:hugmesh-build-config is not a project dependency. hugmesh-parent adds it to
+  the maven-pmd-plugin / maven-checkstyle-plugin / spotbugs-maven-plugin <dependencies>
+  blocks so each analyser reads the curated ruleset off its own plugin classloader. Maven
+  resolves a PLUGIN's dependencies from the plugin repositories, not the project
+  repositories — declaring the URL only under <repositories> resolves the parent POM and
+  then dies at `verify` on the ruleset jar instead.
+
+  WHY EACH REPOSITORY ID GETS ITS OWN <server>
+  ============================================
+  GitHub Packages is per-repository: https://maven.pkg.github.com/<owner>/<repo> serves the
+  packages published from THAT repo only. There is no org-wide Maven endpoint, so the three
+  upstream links of the chain are three URLs, and a <server> id must match each repository
+  id for Maven to attach credentials. They all carry the same credential.
+
+  AND WHY `github` IS IN HERE TOO
+  ===============================
+  `-s` REPLACES the user settings file, so the <server id="github"> that
+  actions/setup-java writes into ~/.m2/settings.xml is NOT visible to a build run with this
+  file. The deploy step's -DaltDeploymentRepository=github::default::... would then upload
+  with no credential at all. The `github` server below is what keeps deploy authenticated.
+
+  NO SECRET IS COMMITTED HERE. GITHUB_ACTOR and GITHUB_TOKEN are injected by the workflow
+  from ${{ github.actor }} and the automatic ${{ secrets.GITHUB_TOKEN }}.
+
+  THE UPSTREAM SERVERS DO NOT USE THE SAME CREDENTIAL AS THE DEPLOY SERVER
+  =======================================================================
+  `github` (deploy, this repo's own registry) authenticates with the automatic
+  ${env.GITHUB_TOKEN}. That is correct and needs nothing from an operator: a workflow may
+  always write packages for the repository it runs in.
+
+  The `github-hugmesh-*` servers READ packages published from OTHER repositories, and the
+  automatic GITHUB_TOKEN is scoped to the repository whose workflow is running. GitHub does
+  not grant it cross-repository package access by default: the package has to name this
+  repository under "Manage Actions access" in its own package settings, or the build has to
+  present a token that carries read:packages for the owner. Wiring these servers to
+  ${env.GITHUB_TOKEN} would therefore work only if somebody remembered to click the grant,
+  and would fail as `Could not resolve net.hugmesh:...`, the exact string this repo's docs
+  teach a reader to interpret as "the upstream is not published yet". That misdiagnosis is
+  the cost this split exists to avoid.
+
+  So the read credential is its own env var. release.yml injects
+      UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+  which means: use the operator's read:packages PAT if one exists, otherwise fall back to
+  the automatic token (correct once the per-package Actions-access grant is in place). The
+  "Preflight, cross-repo package read" step in release.yml probes the upstream registries
+  with this credential BEFORE maven runs, and reports an authorisation failure as an
+  authorisation failure. RELEASING.md section 6.2 carries the operator's choice between the
+  two routes. NEITHER IS VERIFIED. No CI job in this org has ever started (billing).
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <servers>
+    <!-- Deploy target for THIS repo (the -DaltDeploymentRepository id). -->
+    <server>
+      <id>github</id>
+      <username>${env.GITHUB_ACTOR}</username>
+      <password>${env.GITHUB_TOKEN}</password>
+    </server>
+    <!-- Read credentials for the three upstream links of the chain. -->
+    <server>
+      <id>github-hugmesh-build-config</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-parent</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+    <server>
+      <id>github-hugmesh-commons</id>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>github-hugmesh-packages</id>
+
+      <!-- Project dependencies + the parent POM. Parent resolution is the reason this has
+           to be in settings.xml at all: a <repositories> block inside pom.xml cannot be
+           used to resolve that same pom's own <parent>. -->
+      <repositories>
+        <repository>
+          <id>github-hugmesh-build-config</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-build-config</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+
+      <!-- Plugin classpath artifacts — hugmesh-build-config's rulesets. See the header. -->
+      <pluginRepositories>
+        <pluginRepository>
+          <id>github-hugmesh-build-config</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-build-config</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>github-hugmesh-parent</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-parent</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>github-hugmesh-commons</id>
+          <url>https://maven.pkg.github.com/hugmesh/hugmesh-commons</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <!-- Active unconditionally: this file only ever reaches a build that asked for it by
+       path, so there is nothing to gate on. -->
+  <activeProfiles>
+    <activeProfile>github-hugmesh-packages</activeProfile>
+  </activeProfiles>
+</settings>
