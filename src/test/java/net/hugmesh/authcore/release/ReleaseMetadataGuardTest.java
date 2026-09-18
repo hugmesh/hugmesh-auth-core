@@ -362,22 +362,6 @@ class ReleaseMetadataGuardTest {
     }
 
     @Test
-    @DisplayName("no workflow in this repo fires on its own — not just release.yml")
-    void everyWorkflowIsDispatchOnly() throws Exception {
-        for (Path file : workflowFiles()) {
-            String relative = repoRoot().relativize(file).toString();
-            Set<String> triggers = triggerNames(parseWorkflow(relative));
-            assertThat(triggers)
-                    .as("%s declares triggers %s. Every workflow in this repo publishes or can "
-                            + "publish an immutable coordinate, so all of them stay "
-                            + "workflow_dispatch-only — the guard that protected release.yml "
-                            + "alone would have let a second workflow arrive with a push "
-                            + "trigger and nobody notice.", relative, triggers)
-                    .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
-        }
-    }
-
-    @Test
     @DisplayName("every maven command in release.yml passes the CI-only settings file")
     void releaseWorkflowResolvesThroughTheCiSettingsFile() throws Exception {
         assertThat(repoRoot().resolve(CI_SETTINGS))
@@ -496,5 +480,283 @@ class ReleaseMetadataGuardTest {
                         + "first hop with a 404 that reads like a missing workflow.",
                         CHAIN_WORKFLOW)
                 .contains("RELEASE_CHAIN_TOKEN");
+    }
+
+    // ===================================================================================
+    // Cross-repo package reads (added 2026-09-18, after adversarial review of the decision
+    // 27 round). The prepared chain reads GitHub Packages published from OTHER repositories.
+    // secrets.GITHUB_TOKEN is scoped to the repository whose workflow is running, and GitHub
+    // does not grant it cross-repository package access by default: the package must name
+    // this repository under "Manage Actions access", or the build must present a token
+    // carrying read:packages. Nothing in the first cut did either, and the resulting maven
+    // error is "Could not resolve net.hugmesh:..." — the exact string RELEASING.md teaches a
+    // reader to interpret as "the upstream is not published yet". These checks pin the fix.
+    // ===================================================================================
+
+    /** The env var pair the upstream <server> entries read their credential from. */
+    private static final String UPSTREAM_ACTOR = "${env.UPSTREAM_PACKAGES_ACTOR}";
+    private static final String UPSTREAM_TOKEN = "${env.UPSTREAM_PACKAGES_TOKEN}";
+
+    /** Every step of a workflow, as parsed maps. */
+    private static List<Map<?, ?>> steps(Map<?, ?> workflow) {
+        List<Map<?, ?>> out = new ArrayList<>();
+        if (workflow.get("jobs") instanceof Map<?, ?> jobs) {
+            for (Object job : jobs.values()) {
+                if (job instanceof Map<?, ?> jobMap && jobMap.get("steps") instanceof Iterable<?> list) {
+                    for (Object step : list) {
+                        if (step instanceof Map<?, ?> stepMap) {
+                            out.add(stepMap);
+                        }
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    /** {@code <server>} id to its literal [username, password] in a settings file. */
+    private static Map<String, List<String>> serverCredentials(String relative) throws Exception {
+        DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+        f.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        f.setNamespaceAware(false);
+        Document doc = f.newDocumentBuilder().parse(new File(repoRoot().resolve(relative).toString()));
+        Map<String, List<String>> out = new java.util.LinkedHashMap<>();
+        NodeList servers = doc.getElementsByTagName("server");
+        for (int i = 0; i < servers.getLength(); i++) {
+            String id = null;
+            String user = "";
+            String pass = "";
+            NodeList kids = servers.item(i).getChildNodes();
+            for (int k = 0; k < kids.getLength(); k++) {
+                Node kid = kids.item(k);
+                if (kid.getNodeType() != Node.ELEMENT_NODE) {
+                    continue;
+                }
+                switch (kid.getNodeName()) {
+                    case "id" -> id = kid.getTextContent().trim();
+                    case "username" -> user = kid.getTextContent().trim();
+                    case "password" -> pass = kid.getTextContent().trim();
+                    default -> { }
+                }
+            }
+            if (id != null) {
+                out.put(id, List.of(user, pass));
+            }
+        }
+        assertThat(out).as("%s declares no <server> entries at all", relative).isNotEmpty();
+        return out;
+    }
+
+    /** Recursively: does any {@code permissions:} block in this document mention packages? */
+    private static boolean grantsPackagesPermission(Object node) {
+        if (node instanceof Map<?, ?> m) {
+            Object perms = m.get("permissions");
+            if (perms instanceof Map<?, ?> pm && pm.containsKey("packages")) {
+                return true;
+            }
+            if ("write-all".equals(String.valueOf(perms))) {
+                return true;
+            }
+            for (Object v : m.values()) {
+                if (grantsPackagesPermission(v)) {
+                    return true;
+                }
+            }
+        } else if (node instanceof Iterable<?> it) {
+            for (Object v : it) {
+                if (grantsPackagesPermission(v)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Can this workflow publish an immutable coordinate, directly or by dispatching something
+     * that does?
+     *
+     * <p>The classifier is deliberately lopsided: EXEMPTION is hard to obtain and easy to lose.
+     * A workflow counts as publishing if ANY of these hold — a parsed {@code run:} command
+     * invokes the {@code deploy} phase/goal; a parsed {@code run:} command dispatches another
+     * workflow ({@code gh workflow run}); any {@code permissions:} block in it mentions
+     * {@code packages}; or the RAW file text names {@code maven.pkg.github.com} at all,
+     * comments included. The raw-text clause is on the INCLUDING side on purpose — a comment
+     * that mentions the registry makes a workflow stricter, never looser, which is the
+     * opposite of the fail-open direction this class was burned by before.
+     *
+     * <p><b>Why this is not simply "every workflow".</b> Measured 2026-09-18: the
+     * all-workflows form failed a plain {@code ci.yml} running {@code ./mvnw test} on
+     * {@code pull_request}, with the message "Every workflow in this repo publishes or can
+     * publish an immutable coordinate" — which is false of a test-only workflow. This repo has
+     * no pre-merge CI workflow yet, so that guard would have gone red in the face of the first
+     * person wiring one up (the 116-of-126 pre-merge gate programme), for a reason with
+     * nothing to do with releases. A guard that blocks the correct change is a guard people
+     * delete.
+     */
+    private static boolean canPublish(String relative) throws Exception {
+        if (read(relative).contains(PACKAGES_HOST)) {
+            return true;
+        }
+        Map<?, ?> workflow = parseWorkflow(relative);
+        if (grantsPackagesPermission(workflow)) {
+            return true;
+        }
+        for (String cmd : runCommands(workflow)) {
+            if (cmd.matches("(?s).*\\bdeploy\\b.*") || cmd.contains("workflow run")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Test
+    @DisplayName("every workflow that CAN publish is dispatch-only — and release.yml is always classified as one")
+    void everyPublishingWorkflowIsDispatchOnly() throws Exception {
+        List<String> publishing = new ArrayList<>();
+        List<String> exempt = new ArrayList<>();
+        for (Path file : workflowFiles()) {
+            String relative = repoRoot().relativize(file).toString().replace('\\', '/');
+            if (!canPublish(relative)) {
+                exempt.add(relative);
+                continue;
+            }
+            publishing.add(relative);
+            Set<String> triggers = triggerNames(parseWorkflow(relative));
+            assertThat(triggers)
+                    .as("%s can publish an immutable coordinate and declares triggers %s. "
+                            + "Any trigger other than workflow_dispatch — push, pull_request, "
+                            + "release, schedule, workflow_run, repository_dispatch — republishes "
+                            + "whatever version pom.xml happens to hold over a coordinate that is "
+                            + "already out there. If a new trigger is deliberate, widen "
+                            + "ONLY_ALLOWED_TRIGGER in the same change and say why in RELEASING.md. "
+                            + "(Workflows this run treated as NON-publishing, and therefore free to "
+                            + "carry any trigger: %s — see canPublish().)",
+                            relative, triggers, exempt)
+                    .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
+        }
+        assertThat(publishing)
+                .as("canPublish() exempted the release workflow itself, so this guard just passed "
+                        + "vacuously over the one file it exists for. Classified as publishing: %s; "
+                        + "exempt: %s.", publishing, exempt)
+                .contains(RELEASE_WORKFLOW, CHAIN_WORKFLOW);
+    }
+
+    @Test
+    @DisplayName("cross-repo package reads do NOT ride on the repository-scoped GITHUB_TOKEN")
+    void upstreamReadsCarryTheirOwnOverridableCredential() throws Exception {
+        Map<String, List<String>> servers = serverCredentials(CI_SETTINGS);
+
+        assertThat(servers.get("github"))
+                .as("the DEPLOY server must keep the automatic ${env.GITHUB_TOKEN}. A workflow "
+                        + "may always write packages for the repository it runs in, so requiring "
+                        + "an operator-held secret for the deploy half would be a regression, not "
+                        + "a fix. Declared: %s", servers)
+                .containsExactly("${env.GITHUB_ACTOR}", "${env.GITHUB_TOKEN}");
+
+        for (Map.Entry<String, List<String>> e : servers.entrySet()) {
+            if ("github".equals(e.getKey())) {
+                continue;
+            }
+            assertThat(e.getValue())
+                    .as("<server id=%s> authenticates a READ of packages published from ANOTHER "
+                            + "repository. secrets.GITHUB_TOKEN is scoped to the repository whose "
+                            + "workflow is running; GitHub does not grant it cross-repo package "
+                            + "access unless that package names this repository under 'Manage "
+                            + "Actions access'. Wiring this server to ${env.GITHUB_TOKEN} makes "
+                            + "the whole chain depend on a click nobody wrote down, and it fails "
+                            + "as 'Could not resolve net.hugmesh:...' — the exact string "
+                            + "RELEASING.md teaches a reader to interpret as 'the upstream is not "
+                            + "published yet', so the first real run gets MISDIAGNOSED. Use %s / "
+                            + "%s, which release.yml injects from secrets.PACKAGES_READ_TOKEN with "
+                            + "a GITHUB_TOKEN fallback. See RELEASING.md 6.2.",
+                            e.getKey(), UPSTREAM_ACTOR, UPSTREAM_TOKEN)
+                    .containsExactly(UPSTREAM_ACTOR, UPSTREAM_TOKEN);
+        }
+    }
+
+    @Test
+    @DisplayName("release.yml injects that read credential into every settings-file maven step, overridably")
+    void releaseWorkflowInjectsTheUpstreamReadCredential() throws Exception {
+        int checked = 0;
+        for (Map<?, ?> step : steps(parseWorkflow(RELEASE_WORKFLOW))) {
+            if (!(step.get("run") instanceof String run) || !run.contains(CI_SETTINGS_FLAG)) {
+                continue;
+            }
+            checked++;
+            Object env = step.get("env");
+            assertThat(env)
+                    .as("step '%s' runs maven with %s but declares no env: block, so "
+                            + "${env.UPSTREAM_PACKAGES_TOKEN} in the settings file expands to "
+                            + "nothing and every upstream read goes out unauthenticated (401).",
+                            step.get("name"), CI_SETTINGS_FLAG)
+                    .isInstanceOf(Map.class);
+            Map<?, ?> envMap = (Map<?, ?>) env;
+            String token = String.valueOf(envMap.get("UPSTREAM_PACKAGES_TOKEN"));
+            List<String> envKeys = envMap.keySet().stream().map(String::valueOf).toList();
+            assertThat(envKeys)
+                    .as("step '%s' must inject UPSTREAM_PACKAGES_ACTOR and "
+                            + "UPSTREAM_PACKAGES_TOKEN. Declared: %s",
+                            step.get("name"), envKeys)
+                    .contains("UPSTREAM_PACKAGES_ACTOR", "UPSTREAM_PACKAGES_TOKEN");
+            assertThat(token)
+                    .as("step '%s' wires UPSTREAM_PACKAGES_TOKEN to '%s'. It must offer the "
+                            + "operator's read:packages PAT FIRST and fall back to the automatic "
+                            + "token: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}. "
+                            + "Hardcoding secrets.GITHUB_TOKEN alone puts the chain back on the "
+                            + "per-package 'Manage Actions access' click with no way for an "
+                            + "operator to override it.", step.get("name"), token)
+                    .contains("secrets.PACKAGES_READ_TOKEN")
+                    .contains("secrets.GITHUB_TOKEN");
+        }
+        assertThat(checked)
+                .as("no step in %s runs maven with %s — this guard just passed vacuously",
+                        RELEASE_WORKFLOW, CI_SETTINGS_FLAG)
+                .isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("the cross-repo read is preflighted, and both ways to authorise it are written down")
+    void crossRepoPackageReadIsPreflightedAndDocumented() throws Exception {
+        List<Map<?, ?>> preflights = steps(parseWorkflow(RELEASE_WORKFLOW)).stream()
+                .filter(s -> String.valueOf(s.get("name")).toLowerCase(Locale.ROOT).startsWith("preflight"))
+                .toList();
+        assertThat(preflights)
+                .as("%s has no Preflight step. Without it, a credential that cannot read an "
+                        + "upstream registry surfaces only as maven's 'Could not resolve "
+                        + "net.hugmesh:...', which is indistinguishable from 'not published yet' "
+                        + "and sends the operator off to re-publish something that is already "
+                        + "there. The preflight exists to name that failure correctly.",
+                        RELEASE_WORKFLOW)
+                .hasSize(1);
+
+        String script = String.valueOf(preflights.get(0).get("run"));
+        for (String upstream : UPSTREAM_REPOS) {
+            assertThat(script)
+                    .as("the preflight never probes hugmesh/%s, so a credential that cannot read "
+                            + "that upstream gets past it. Upstreams: %s", upstream, UPSTREAM_REPOS)
+                    .contains(upstream);
+        }
+        assertThat(script)
+                .as("the preflight must tell 401/403 (cannot authenticate) apart from 404 "
+                        + "(nothing published, OR published and masked). Collapsing them is the "
+                        + "misdiagnosis this step exists to prevent. Script: %s", script)
+                .contains("401").contains("403").contains("404");
+        assertThat(String.valueOf(preflights.get(0).get("env")))
+                .as("the preflight must probe with the SAME credential maven will use, or a green "
+                        + "preflight proves nothing about the build that follows it.")
+                .contains("UPSTREAM_PACKAGES_TOKEN");
+
+        String releasing = read("RELEASING.md");
+        assertThat(releasing)
+                .as("RELEASING.md must name the per-package 'Manage Actions access' grant. It is "
+                        + "a launch-day step that going public does NOT perform for you, and it "
+                        + "sits between 'make the repos public' and 'run one workflow'.")
+                .contains("Manage Actions access");
+        assertThat(releasing)
+                .as("RELEASING.md must name PACKAGES_READ_TOKEN — the other of the two routes, "
+                        + "and the one the workflow reads.")
+                .contains("PACKAGES_READ_TOKEN");
     }
 }

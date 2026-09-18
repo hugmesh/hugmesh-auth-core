@@ -51,6 +51,31 @@
 
   NO SECRET IS COMMITTED HERE. GITHUB_ACTOR and GITHUB_TOKEN are injected by the workflow
   from ${{ github.actor }} and the automatic ${{ secrets.GITHUB_TOKEN }}.
+
+  THE UPSTREAM SERVERS DO NOT USE THE SAME CREDENTIAL AS THE DEPLOY SERVER
+  =======================================================================
+  `github` (deploy, this repo's own registry) authenticates with the automatic
+  ${env.GITHUB_TOKEN}. That is correct and needs nothing from an operator: a workflow may
+  always write packages for the repository it runs in.
+
+  The `github-hugmesh-*` servers READ packages published from OTHER repositories, and the
+  automatic GITHUB_TOKEN is scoped to the repository whose workflow is running. GitHub does
+  not grant it cross-repository package access by default: the package has to name this
+  repository under "Manage Actions access" in its own package settings, or the build has to
+  present a token that carries read:packages for the owner. Wiring these servers to
+  ${env.GITHUB_TOKEN} would therefore work only if somebody remembered to click the grant,
+  and would fail as `Could not resolve net.hugmesh:...`, the exact string this repo's docs
+  teach a reader to interpret as "the upstream is not published yet". That misdiagnosis is
+  the cost this split exists to avoid.
+
+  So the read credential is its own env var. release.yml injects
+      UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+  which means: use the operator's read:packages PAT if one exists, otherwise fall back to
+  the automatic token (correct once the per-package Actions-access grant is in place). The
+  "Preflight, cross-repo package read" step in release.yml probes the upstream registries
+  with this credential BEFORE maven runs, and reports an authorisation failure as an
+  authorisation failure. RELEASING.md section 6.2 carries the operator's choice between the
+  two routes. NEITHER IS VERIFIED. No CI job in this org has ever started (billing).
 -->
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -66,18 +91,18 @@
     <!-- Read credentials for the three upstream links of the chain. -->
     <server>
       <id>github-hugmesh-build-config</id>
-      <username>${env.GITHUB_ACTOR}</username>
-      <password>${env.GITHUB_TOKEN}</password>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
     </server>
     <server>
       <id>github-hugmesh-parent</id>
-      <username>${env.GITHUB_ACTOR}</username>
-      <password>${env.GITHUB_TOKEN}</password>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
     </server>
     <server>
       <id>github-hugmesh-commons</id>
-      <username>${env.GITHUB_ACTOR}</username>
-      <password>${env.GITHUB_TOKEN}</password>
+      <username>${env.UPSTREAM_PACKAGES_ACTOR}</username>
+      <password>${env.UPSTREAM_PACKAGES_TOKEN}</password>
     </server>
   </servers>
 

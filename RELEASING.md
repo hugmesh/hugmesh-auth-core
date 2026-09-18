@@ -260,7 +260,7 @@ Operator decision 27's note asks for the packages to be **published on GitHub un
 hugmesh at launch**, and: *"If we can publish the packages now before unpriviting and going
 public, let's do that."*
 
-### 6.1 Can it publish now, while the repos are private? Measured: NO — two independent blockers
+### 6.1 Can it publish now, while the repos are private? Measured: NO — and one of the four blockers survives going public
 
 **Blocker 1 — no Actions job in this org starts at all today.** Not "fails"; *never starts*.
 Measured 2026-09-17 on the most recent runs across the org:
@@ -292,25 +292,93 @@ its repository. Publishing early would produce four private coordinates that nob
 the org can resolve, and the operator's goal is packages the public can consume. Publishing
 on the day the repos go public gets that for free.
 
+**Blocker 4 — and this is the one going public does NOT clear: the chain cannot read its
+own upstreams without an explicit grant.** Links 2–4 (`hugmesh-parent`, `hugmesh-commons`,
+`hugmesh-auth-core`) each resolve `net.hugmesh` artifacts published from a *different*
+repository. `secrets.GITHUB_TOKEN` is scoped to the repository whose workflow is running,
+and GitHub does not extend it across repositories for package reads: the package has to name
+the consuming repository under **Manage Actions access** in its own package settings, or the
+build has to present a token carrying `read:packages`.
+
+This was missed in the first cut of this round — every upstream `<server>` was wired to
+`${env.GITHUB_TOKEN}` — and the reason it matters more than an ordinary missing step is the
+**shape of its failure**. Maven reports it as:
+
+```
+Could not resolve net.hugmesh:hugmesh-parent:pom:2.8.0
+```
+
+which is the *same string* §3.2, the workflow comments and the chain workflow all teach a
+reader to interpret as *"the upstream is not published yet"*. The natural response — go and
+re-publish the upstream — burns a version number, succeeds, and hits the identical wall.
+
+Two things now stand between that and the first real run:
+
+- **The read credential is its own env var.** `.github/maven-ci-settings.xml` authenticates
+  the three `github-hugmesh-*` upstream servers with `${env.UPSTREAM_PACKAGES_*}`, which
+  `release.yml` injects as
+  `${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}`. The `github` *deploy* server
+  still uses the automatic `${env.GITHUB_TOKEN}` — a workflow may always write packages for
+  its own repository, so nothing about the deploy half needs an operator secret.
+  `ReleaseMetadataGuardTest.upstreamReadsCarryTheirOwnOverridableCredential` fails the build
+  if an upstream server is put back on `GITHUB_TOKEN`.
+- **A preflight step names the failure correctly.** Before maven runs, `release.yml` probes
+  each upstream's `maven-metadata.xml` with the exact credential maven is about to use, and
+  distinguishes `401`/`403` (*cannot authenticate — this is not "unpublished"*) from `404`
+  (*either nothing is published there yet, **or** it is published and this credential cannot
+  see it, because GitHub masks an unauthorised read of a private package as 404 — look at
+  the package page before re-publishing anything*). Exercised locally against the live
+  registry on 2026-09-18: with an invalid credential it emitted the `401` branch for all
+  three upstreams and exited 1.
+
+Neither of those *grants* anything. The grant is a launch-day click (§6.2 step 2) or a
+secret, and **which one the operator picks is still undecided.**
+
 ### 6.2 The click list for the day the repos go public
 
-1. **Make the four repos public**: `hugmesh-build-config`, `hugmesh-parent`,
-   `hugmesh-commons`, `hugmesh-auth-core`. Blocker 1 dies here.
-2. **Create the cross-repo credential.** A PAT with **Actions: read and write** on those
-   four repos (fine-grained), or a classic token with `repo` + `workflow`. Store it as
-   **`RELEASE_CHAIN_TOKEN`** — an organisation secret visible to the four repos, or a repo
-   secret on `hugmesh-auth-core` alone. This is the *only* operator-held secret in the whole
-   path: each repo's own deploy step uses the automatic `secrets.GITHUB_TOKEN`.
-3. **Run one workflow.** `hugmesh-auth-core` → Actions → **Release chain** → Run workflow,
+1. **Make all four repos public** — `hugmesh-build-config`, `hugmesh-parent`,
+   `hugmesh-commons`, `hugmesh-auth-core` — **in the same sitting.** Blockers 1 and 3 die
+   here; blocker 4 does not (step 2). A *partial* rollout is worse than none: a package
+   published from a still-private repo is private, so a public downstream repo resolving it
+   hits the masked-404 path in §6.1 and the chain stops somewhere in the middle, with some
+   coordinates already published and immutable.
+2. **Authorise the cross-repo package READS — pick one of two routes.** Going public does
+   not do this for you (§6.1, blocker 4). Neither route has been executed; the workflow
+   supports both.
+   - **Route A, no secret.** On each of `hugmesh-build-config`, `hugmesh-parent` and
+     `hugmesh-commons`: open the published Maven package → *Package settings* → **Manage
+     Actions access** → *Add repository*, and add every repository downstream of it
+     (`hugmesh-build-config` → parent, commons, auth-core; `hugmesh-parent` → commons,
+     auth-core; `hugmesh-commons` → auth-core). Six grants. They can only be made **after**
+     the package exists, which means route A cannot be completed before the first link
+     publishes — so on a first-ever run the chain has to be walked link by link, granting
+     as you go, rather than fired in one click.
+   - **Route B, one secret, works on a cold first run.** Create a PAT with `read:packages`
+     on the hugmesh org (classic `read:packages`, or fine-grained with *Packages: read* on
+     the four repos) and store it as **`PACKAGES_READ_TOKEN`** — an organisation secret
+     visible to the four repos, or a repo secret on each of parent, commons and auth-core.
+     `release.yml` prefers it and falls back to `GITHUB_TOKEN` when it is absent. **Route B
+     is the one to use for the launch-day single-click publish**; route A is the durable
+     shape afterwards.
+3. **Create the cross-repo DISPATCH credential** — only if you want one click instead of
+   four. A PAT with **Actions: read and write** on those four repos (fine-grained), or a
+   classic token with `repo` + `workflow`, stored as **`RELEASE_CHAIN_TOKEN`** (an
+   organisation secret visible to the four repos, or a repo secret on `hugmesh-auth-core`
+   alone). This is separate from `PACKAGES_READ_TOKEN` in step 2 and does **not** replace
+   it: `RELEASE_CHAIN_TOKEN` is read only by `release-chain.yml`'s `gh` calls and is never
+   passed to maven. Each repo's own deploy step uses the automatic `secrets.GITHUB_TOKEN`,
+   which is correct and needs nothing.
+4. **Run one workflow.** `hugmesh-auth-core` → Actions → **Release chain** → Run workflow,
    `confirm` = `PUBLISH`. It dispatches, in order, `hugmesh-build-config` →
    `hugmesh-parent` → `hugmesh-commons` → `hugmesh-auth-core`, waiting for each and stopping
    at the first failure rather than publishing the rest on top of a hole.
-   (Skipping step 2 and clicking each repo's own **Release** workflow by hand, in that order,
-   is the same publish with four buttons instead of one.)
-4. **Fetch one coordinate back** from a clean local repository before any consumer pin moves
+   (Skipping step 3 and clicking each repo's own **Release** workflow by hand, in that
+   order, is the same publish with four buttons instead of one. Step 2 is **not** skippable
+   either way — it authorises the reads, not the dispatch.)
+5. **Fetch one coordinate back** from a clean local repository before any consumer pin moves
    — §5. A publish that reports success and a coordinate that resolves are not the same
    claim.
-5. **Add the `2.5.1` row** to `hugmesh-generator/tests/stack/m2-bootstrap.sh`'s `PINS` table
+6. **Add the `2.5.1` row** to `hugmesh-generator/tests/stack/m2-bootstrap.sh`'s `PINS` table
    and run `tests/stack/test-m2-bootstrap.sh` (§3.4).
 
 ### 6.3 What nobody has verified, and cannot verify from here
@@ -326,6 +394,16 @@ on the day the repos go public gets that for free.
   record locally-installed origins.
 - **`hugmesh-parent`'s runner JDK.** It pinned `java-version: '21'` while the metapom's
   `java.version` is 25; aligned to 25 on this round, still never executed.
+- **Whether `RELEASE_CHAIN_TOKEN` and `PACKAGES_READ_TOKEN` exist is an INFERENCE, not a
+  reading.** Listing repository or organisation secrets needs org-admin or the
+  `actions secrets` fine-grained permission; both
+  `gh api /repos/hugmesh/hugmesh-auth-core/actions/secrets` and
+  `gh api /orgs/hugmesh/actions/secrets` answer **403** from this box. Almost certainly
+  neither exists — nothing has ever needed them — but nobody here has looked.
+- **The cross-repo package grant has never been exercised in either route.** Route A's
+  *Manage Actions access* page cannot even be opened until a package exists, and route B's
+  PAT does not exist. The preflight's `401` branch is verified against the live registry;
+  its `200` branch is not, by anyone.
 
 ---
 
