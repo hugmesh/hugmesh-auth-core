@@ -17,10 +17,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -270,5 +273,228 @@ class ReleaseMetadataGuardTest {
                         + "ONLY_ALLOWED_TRIGGER in the same change and say why in RELEASING.md.",
                         triggers)
                 .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
+    }
+
+    // ===================================================================================
+    // Decision 27 (hugmesh-generator#347, 2026-09-17): "B for the mechanism, A prepared".
+    // The source-build mechanism is untouched; the publish path is real but unfired. These
+    // four checks pin the shape of that prepared path, and in particular pin the ONE thing
+    // that would quietly break every developer and every cold compose build if someone
+    // "simplified" it: the GitHub Packages URL living anywhere except the CI-only settings
+    // file. maven.pkg.github.com answers 401 to an UNAUTHENTICATED GET (measured
+    // 2026-09-17, and 401 again with a classic token that lacks read:packages), so a
+    // <repositories> entry in pom.xml is not a convenience, it is an outage.
+    // ===================================================================================
+
+    /** The CI-only Maven settings file. The only place a GitHub Packages URL may appear. */
+    private static final String CI_SETTINGS = ".github/maven-ci-settings.xml";
+
+    /** What every maven invocation in the release workflow must pass. */
+    private static final String CI_SETTINGS_FLAG = "-s " + CI_SETTINGS;
+
+    /** The one-trigger orchestrator that fires all four links in build order. */
+    private static final String CHAIN_WORKFLOW = ".github/workflows/release-chain.yml";
+
+    private static final String PACKAGES_HOST = "maven.pkg.github.com";
+
+    /** The upstreams this build must RESOLVE, in the order they have to be published. */
+    private static final List<String> UPSTREAM_REPOS =
+            List.of("hugmesh-build-config", "hugmesh-parent", "hugmesh-commons");
+
+    /** The full chain, in build order — what release-chain.yml must dispatch. */
+    private static final List<String> CHAIN_REPOS =
+            List.of("hugmesh-build-config", "hugmesh-parent", "hugmesh-commons", "hugmesh-auth-core");
+
+    /** Any YAML file under .github/workflows, parsed. */
+    private static Map<?, ?> parseWorkflow(String relative) throws Exception {
+        Object doc = new Yaml(new SafeConstructor(new LoaderOptions())).load(read(relative));
+        assertThat(doc).as("%s must parse as a YAML mapping", relative).isInstanceOf(Map.class);
+        return (Map<?, ?>) doc;
+    }
+
+    /** Every workflow file in the repo, not just release.yml. */
+    private static List<Path> workflowFiles() throws Exception {
+        Path dir = repoRoot().resolve(".github/workflows");
+        assertThat(dir).as(".github/workflows must exist — the publish path lives there").isDirectory();
+        try (Stream<Path> paths = Files.list(dir)) {
+            List<Path> files = paths.filter(Files::isRegularFile)
+                    .filter(f -> {
+                        String n = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                        return n.endsWith(".yml") || n.endsWith(".yaml");
+                    })
+                    .sorted(Comparator.comparing(Path::toString))
+                    .toList();
+            assertThat(files).as("no workflow files found — this guard would pass vacuously").isNotEmpty();
+            return files;
+        }
+    }
+
+    /** {@code <id>}/{@code <url>} pairs of every element of the given tag in an XML file. */
+    private static Map<String, String> xmlEntries(String relative, String tag) throws Exception {
+        DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+        f.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        f.setNamespaceAware(false);
+        Document doc = f.newDocumentBuilder().parse(new File(repoRoot().resolve(relative).toString()));
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        NodeList nodes = doc.getElementsByTagName(tag);
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node n = nodes.item(i);
+            String id = null;
+            String url = "";
+            NodeList kids = n.getChildNodes();
+            for (int k = 0; k < kids.getLength(); k++) {
+                Node kid = kids.item(k);
+                if (kid.getNodeType() != Node.ELEMENT_NODE) {
+                    continue;
+                }
+                if ("id".equals(kid.getNodeName())) {
+                    id = kid.getTextContent().trim();
+                } else if ("url".equals(kid.getNodeName())) {
+                    url = kid.getTextContent().trim();
+                }
+            }
+            if (id != null) {
+                out.put(id, url);
+            }
+        }
+        return out;
+    }
+
+    @Test
+    @DisplayName("no workflow in this repo fires on its own — not just release.yml")
+    void everyWorkflowIsDispatchOnly() throws Exception {
+        for (Path file : workflowFiles()) {
+            String relative = repoRoot().relativize(file).toString();
+            Set<String> triggers = triggerNames(parseWorkflow(relative));
+            assertThat(triggers)
+                    .as("%s declares triggers %s. Every workflow in this repo publishes or can "
+                            + "publish an immutable coordinate, so all of them stay "
+                            + "workflow_dispatch-only — the guard that protected release.yml "
+                            + "alone would have let a second workflow arrive with a push "
+                            + "trigger and nobody notice.", relative, triggers)
+                    .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
+        }
+    }
+
+    @Test
+    @DisplayName("every maven command in release.yml passes the CI-only settings file")
+    void releaseWorkflowResolvesThroughTheCiSettingsFile() throws Exception {
+        assertThat(repoRoot().resolve(CI_SETTINGS))
+                .as("%s must exist — it is the whole resolution route for a CI build. Without "
+                        + "it `verify` cannot resolve this pom's own <parent> (the effective "
+                        + "repository list is Maven Central alone and net.hugmesh:* is 404 "
+                        + "there).", CI_SETTINGS)
+                .exists();
+
+        List<String> runs = runCommands(releaseWorkflow());
+        List<String> mavens = runs.stream()
+                .filter(c -> c.matches("(?s).*(^|\\s)\\./mvnw(\\s|$).*") || c.matches("(?s).*(^|\\s)mvn(\\s|$).*"))
+                .toList();
+        assertThat(mavens)
+                .as("%s runs no maven command at all — the publish step is gone or is no longer "
+                        + "a `run:` step this guard can read. Parsed commands: %s",
+                        RELEASE_WORKFLOW, runs)
+                .isNotEmpty();
+
+        for (String cmd : mavens) {
+            assertThat(cmd)
+                    .as("every maven invocation in %s must pass `%s`. `-s` REPLACES the user "
+                            + "settings file, so a command that omits it gets neither the "
+                            + "upstream repositories (build fails at parent resolution) nor the "
+                            + "`github` server entry (deploy uploads unauthenticated). "
+                            + "Offending command: %s", RELEASE_WORKFLOW, CI_SETTINGS_FLAG, cmd)
+                    .contains(CI_SETTINGS_FLAG);
+        }
+    }
+
+    @Test
+    @DisplayName("the CI settings file declares each upstream as BOTH a repository and a pluginRepository")
+    void ciSettingsCoversTheWholeUpstreamChain() throws Exception {
+        Map<String, String> repositories = xmlEntries(CI_SETTINGS, "repository");
+        Map<String, String> pluginRepositories = xmlEntries(CI_SETTINGS, "pluginRepository");
+        Map<String, String> servers = xmlEntries(CI_SETTINGS, "server");
+
+        for (String upstream : UPSTREAM_REPOS) {
+            String expectedUrl = "https://" + PACKAGES_HOST + "/hugmesh/" + upstream;
+            assertThat(repositories.values())
+                    .as("%s declares no <repository> for %s. GitHub Packages is per-repository "
+                            + "(there is no org-wide Maven endpoint), so every upstream link is "
+                            + "its own URL. Declared: %s", CI_SETTINGS, upstream, repositories)
+                    .contains(expectedUrl);
+            assertThat(pluginRepositories.values())
+                    .as("%s declares no <pluginRepository> for %s. Maven resolves a PLUGIN's "
+                            + "<dependencies> from the PLUGIN repositories: hugmesh-parent puts "
+                            + "net.hugmesh:hugmesh-build-config on the PMD/Checkstyle/SpotBugs "
+                            + "plugin classpaths, so a repositories-only file resolves the parent "
+                            + "POM and then dies at `verify` on the ruleset jar. Declared: %s",
+                            CI_SETTINGS, upstream, pluginRepositories)
+                    .contains(expectedUrl);
+        }
+
+        assertThat(servers.keySet())
+                .as("%s must carry a <server> for every repository id it declares, or Maven "
+                        + "sends no credential and GitHub Packages answers 401 even for a read. "
+                        + "Repository ids: %s; server ids: %s",
+                        CI_SETTINGS, repositories.keySet(), servers.keySet())
+                .containsAll(repositories.keySet())
+                .containsAll(pluginRepositories.keySet());
+
+        assertThat(servers)
+                .as("%s must also carry the `github` <server>: `-s` replaces the settings file "
+                        + "actions/setup-java generates, so without this entry the deploy step's "
+                        + "-DaltDeploymentRepository=github::default::... uploads with no "
+                        + "credential. Server ids: %s", CI_SETTINGS, servers.keySet())
+                .containsKey("github");
+    }
+
+    @Test
+    @DisplayName("the GitHub Packages URL never leaks into the normal, unauthenticated build")
+    void packagesRepositoryStaysOutOfThePomAndTheGitlabSettings() throws Exception {
+        for (String everydayFile : List.of("pom.xml", "settings.xml")) {
+            assertThat(read(everydayFile))
+                    .as("%s names %s. That host answers 401 to an unauthenticated GET (measured "
+                            + "2026-09-17; 401 again with a token lacking read:packages), so "
+                            + "declaring it here breaks every developer `./mvnw verify` and "
+                            + "hugmesh-generator/tests/stack/m2-bootstrap.sh, which is how the "
+                            + "compose lane builds this library and which operator decision 27 "
+                            + "deliberately KEEPS as the mechanism. The URL belongs in %s and "
+                            + "nowhere else.", everydayFile, PACKAGES_HOST, CI_SETTINGS)
+                    .doesNotContain(PACKAGES_HOST);
+        }
+    }
+
+    @Test
+    @DisplayName("the chain workflow dispatches all four links, in build order, on one credential")
+    void releaseChainFiresTheWholeChainInOrder() throws Exception {
+        Map<?, ?> chain = parseWorkflow(CHAIN_WORKFLOW);
+        String script = String.join("\n", runCommands(chain));
+        assertThat(script)
+                .as("%s runs no shell at all — the one-trigger chain is not there", CHAIN_WORKFLOW)
+                .isNotBlank();
+
+        int previous = -1;
+        for (String repo : CHAIN_REPOS) {
+            int at = script.indexOf("hugmesh/" + repo);
+            assertThat(at)
+                    .as("%s never names hugmesh/%s. The chain must dispatch all four links: "
+                            + "%s.", CHAIN_WORKFLOW, repo, CHAIN_REPOS)
+                    .isGreaterThanOrEqualTo(0);
+            assertThat(at)
+                    .as("%s names hugmesh/%s out of build order. Order is %s — publishing a "
+                            + "link before the artifacts it resolves against exist fails as an "
+                            + "unrelated-looking 'Could not resolve net.hugmesh:...' several "
+                            + "steps later.", CHAIN_WORKFLOW, repo, CHAIN_REPOS)
+                    .isGreaterThan(previous);
+            previous = at;
+        }
+
+        assertThat(read(CHAIN_WORKFLOW))
+                .as("%s must read the cross-repo credential from secrets.RELEASE_CHAIN_TOKEN. "
+                        + "secrets.GITHUB_TOKEN is scoped to THIS repository and cannot dispatch "
+                        + "a workflow in the other three, so a chain wired to it fails at the "
+                        + "first hop with a 404 that reads like a missing workflow.",
+                        CHAIN_WORKFLOW)
+                .contains("RELEASE_CHAIN_TOKEN");
     }
 }

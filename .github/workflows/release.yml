@@ -5,13 +5,15 @@
 # workflow_dispatch ONLY — intentionally never runs on push/tag. Stays fully inert until a
 # human enables it.
 #
-# READ RELEASING.md BEFORE RUNNING THIS. As of 2026-09-16 it has never run
-# (`gh run list --repo hugmesh/hugmesh-auth-core` → empty) and the `Build and test` step
-# below is still expected to FAIL on a clean runner: the effective repository list is Maven
-# Central alone, and net.hugmesh:hugmesh-parent:2.8.0 / hugmesh-commons:2.1.0 /
-# hugmesh-build-config:0.5.0 are all 404 there and unpublished on GitHub Packages. That is
-# RELEASING.md §3.2 and it is NOT fixed here — fixing it needs the upstream chain published
-# plus a CI-only resolution route, which is an open design call.
+# READ RELEASING.md BEFORE RUNNING THIS. This is the LAST link of a four-repo chain
+# (build-config 0.5.0 -> parent 2.8.0 -> commons 2.1.0 -> auth-core 2.5.1); running it
+# before its upstreams are published fails at parent resolution, in `Build and test`,
+# before `deploy` is reached. .github/workflows/release-chain.yml fires all four in order.
+#
+# Operator decision 27 (hugmesh-generator#347, 2026-09-17): "B for the mechanism, A
+# prepared" — the source-build mechanism (m2-bootstrap.sh from pinned SHAs) is unchanged
+# and stays the way the compose lane builds this library. This workflow is the prepared,
+# unfired publish path.
 name: Release
 
 on:
@@ -34,14 +36,29 @@ jobs:
           distribution: temurin
           java-version: "25"
           cache: maven
-          # Populates a <server> entry for this id in the generated settings.xml, using
-          # the env vars below for username/password — no hand-rolled settings.xml auth.
+          # NOTE: setup-java's generated ~/.m2/settings.xml is NOT what authenticates this
+          # build. Every mvn invocation below passes `-s .github/maven-ci-settings.xml`,
+          # and `-s` REPLACES the user settings file. The server entries that matter live
+          # in that file. These inputs are kept only so the generated file is not
+          # misleading to a reader who finds it on the runner.
           server-id: github
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 
+      # -s .github/maven-ci-settings.xml is LOAD-BEARING. The effective repository list of
+      # this project is Maven Central alone (measured: `help:evaluate
+      # -Dexpression=project.repositories` returns only `central`), and none of
+      # net.hugmesh:hugmesh-parent:2.8.0 / hugmesh-commons:2.1.0 / hugmesh-build-config:0.5.0
+      # are on Central (404, all three). That settings file is the ONLY place the GitHub
+      # Packages URLs are declared — deliberately not pom.xml, because
+      # maven.pkg.github.com answers 401 to an unauthenticated GET and putting it in the pom
+      # would break every developer build and hugmesh-generator/tests/stack/m2-bootstrap.sh.
+      # See RELEASING.md 3.2 and the header of the settings file itself.
       - name: Build and test
-        run: ./mvnw -B -ntp verify
+        run: ./mvnw -B -ntp -s .github/maven-ci-settings.xml verify
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # -DaltDeploymentRepository is LOAD-BEARING, not decoration. This pom declares no
       # <distributionManagement>, so it inherits hugmesh-parent's, which is
@@ -49,13 +66,13 @@ jobs:
       #   url ${env.CI_API_V4_URL}/projects/${env.CI_PROJECT_ID}/packages/maven
       # and those ${env.*} placeholders are NOT interpolated off GitLab — the literal
       # string is the URL (measured with help:evaluate; both values are quoted in
-      # RELEASING.md §3.1). Without the override this step aims a `gitlab-maven` server id
-      # at an uninterpolated URL while setup-java has provisioned credentials for the
-      # `github` id only: wrong registry AND wrong credential. Same shape as the two
-      # sibling library repos — hugmesh-parent/.github/workflows/release.yml:24 and
-      # hugmesh-build-config/.github/workflows/release.yml:37.
+      # RELEASING.md 3.1). Without the override this step aims a `gitlab-maven` server id
+      # at an uninterpolated URL while the only provisioned credential is for the
+      # `github` id. Same shape as the two sibling library repos —
+      # hugmesh-parent/.github/workflows/release.yml and
+      # hugmesh-build-config/.github/workflows/release.yml.
       - name: Publish jar to GitHub Packages
-        run: ./mvnw -B -ntp deploy -DskipTests -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/${{ github.repository }}
+        run: ./mvnw -B -ntp -s .github/maven-ci-settings.xml deploy -DskipTests -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/${{ github.repository }}
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

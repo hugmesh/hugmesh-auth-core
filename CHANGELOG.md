@@ -74,6 +74,32 @@ stays open.
 - README: the MFA step-up path is described as wired-and-dark rather than "not yet complete"
   (`b04d0cb`), with `file:line` pointers.
 
+### Release plumbing — added 2026-09-17, no code change to the artifact
+Operator decision 27 (hugmesh-generator#347): *"B for the mechanism, A prepared"*. The
+source-build mechanism is untouched — `hugmesh-generator/tests/stack/m2-bootstrap.sh` still
+builds this library from a pinned SHA, and with no `-s` the effective repository list of this
+project is still `central` alone. What changed is that the **publish path is now real and
+unfired**:
+- `.github/maven-ci-settings.xml` — CI-only Maven settings declaring the three upstream
+  GitHub Packages repositories as both `<repositories>` and `<pluginRepositories>`, plus the
+  `github` deploy server. Deliberately NOT in `pom.xml`: `maven.pkg.github.com` answers 401
+  to an unauthenticated GET, so a pom entry would break every developer build and every cold
+  compose build. `RELEASING.md` §3.2.
+- `.github/workflows/release.yml` — both maven steps now pass `-s .github/maven-ci-settings.xml`.
+- `.github/workflows/release-chain.yml` — one `workflow_dispatch` that publishes all four
+  links in build order (`build-config` → `parent` → `commons` → `auth-core`), gated on a
+  literal `PUBLISH` confirmation and on a `RELEASE_CHAIN_TOKEN` secret that does not exist
+  yet. `RELEASING.md` §6.2 is the operator's click list.
+- `ReleaseMetadataGuardTest` grew from 4 checks to 9, all mutation-tested: production was
+  broken eight ways (flag dropped, packages URL moved into the pom, `<pluginRepositories>`
+  deleted, deploy `<server>` deleted, chain reordered, a tag trigger added, the settings file
+  deleted, the chain rewired to `GITHUB_TOKEN`) and the guard went red on all eight.
+
+**Still not published, and it cannot be published today.** No Actions job in this org starts
+at all while the repos are private: the annotation on the most recent runs is *"The job was
+not started because recent account payments have failed or your spending limit needs to be
+increased."* `RELEASING.md` §6.1.
+
 ### Not in this release
 No schema change, no dependency change, no removal. `pom.xml`'s dependency set is
 byte-identical to 2.5.0's.
