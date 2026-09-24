@@ -355,10 +355,13 @@ It is not a launch-only stopgap to be retired afterwards.
    one at a time, strictly upstream first, was considered and not chosen.
 2. **Authorise the cross-repo package READS by creating the `PACKAGES_READ_TOKEN` secret.**
    Going public does not do this for you (§6.1, blocker 4). **This is THE route (decision
-   90a = B, 2026-09-23), and it is kept** after launch, not retired. Create a PAT with
-   `read:packages` on the hugmesh org (classic `read:packages`, or fine-grained with
-   *Packages: read* on the four repos). Store it as **`PACKAGES_READ_TOKEN`**, an organisation
-   secret visible to the four repos. It is **separate from `RELEASE_CHAIN_TOKEN`** (step 3), and
+   90a = B, 2026-09-23), and it is kept** after launch, not retired. Create a **classic**
+   personal access token with the `read:packages` scope, from an account that can read the
+   hugmesh org's packages. It must be classic: GitHub's docs say *"GitHub Packages only
+   supports authentication using a personal access token (classic)"*, so a fine-grained token
+   would be answered 401 by `maven.pkg.github.com` (read from the docs on 2026-09-23, not
+   tested). Store it as **`PACKAGES_READ_TOKEN`**, an organisation secret visible to the four
+   repos. It is **separate from `RELEASE_CHAIN_TOKEN`** (step 3), and
    neither one replaces the other. `release.yml` already prefers it over the `GITHUB_TOKEN`
    fallback, so no workflow change is needed. It does not depend on any package existing
    first, so it can serve a cold first run and the chain can be fired with one click. Not yet
