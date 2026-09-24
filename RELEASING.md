@@ -296,9 +296,13 @@ on the day the repos go public gets that for free.
 own upstreams without an explicit grant.** Links 2–4 (`hugmesh-parent`, `hugmesh-commons`,
 `hugmesh-auth-core`) each resolve `net.hugmesh` artifacts published from a *different*
 repository. `secrets.GITHUB_TOKEN` is scoped to the repository whose workflow is running,
-and GitHub does not extend it across repositories for package reads: the package has to name
-the consuming repository under **Manage Actions access** in its own package settings, or the
-build has to present a token carrying `read:packages`.
+and GitHub does not extend it across repositories for package reads: the build has to present
+a token carrying `read:packages`. That token is the organisation secret **`PACKAGES_READ_TOKEN`**
+(decision 90a = B, §6.2 step 2). GitHub also documents a per-package **Manage Actions access**
+grant, but that is **not the plan**: GitHub's docs list that setting only for container, npm,
+NuGet and RubyGems packages and say Maven packages inherit their repository's permissions, so
+it is probably not offered for these Maven packages at all. That reading comes from the docs
+and is untested, because no package has ever been published.
 
 This was missed in the first cut of this round — every upstream `<server>` was wired to
 `${env.GITHUB_TOKEN}` — and the reason it matters more than an ordinary missing step is the
@@ -317,7 +321,10 @@ Two things now stand between that and the first real run:
 - **The read credential is its own env var.** `.github/maven-ci-settings.xml` authenticates
   the three `github-hugmesh-*` upstream servers with `${env.UPSTREAM_PACKAGES_*}`, which
   `release.yml` injects as
-  `${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}`. The `github` *deploy* server
+  `${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}`. The `GITHUB_TOKEN` fallback is
+  **not a route**: links 2–4 are expected to fail their upstream reads without the secret
+  (see above). Whether it could read the upstreams once they are public is untested and is
+  deliberately not relied on (decision 90a). The `github` *deploy* server
   still uses the automatic `${env.GITHUB_TOKEN}` — a workflow may always write packages for
   its own repository, so nothing about the deploy half needs an operator secret.
   `ReleaseMetadataGuardTest.upstreamReadsCarryTheirOwnOverridableCredential` fails the build
@@ -331,8 +338,10 @@ Two things now stand between that and the first real run:
   registry on 2026-09-18: with an invalid credential it emitted the `401` branch for all
   three upstreams and exited 1.
 
-Neither of those *grants* anything. The grant is a launch-day click (§6.2 step 2) or a
-secret, and **which one the operator picks is still undecided.**
+Neither of those *grants* anything. The grant is the **`PACKAGES_READ_TOKEN`** organisation
+secret (§6.2 step 2). **Decided 2026-09-23, decision 90a = B:** one `read:packages` PAT, kept
+separate from `RELEASE_CHAIN_TOKEN`, created by the operator and **kept** as a standing secret.
+It is not a launch-only stopgap to be retired afterwards.
 
 ### 6.2 The click list for the day the repos go public
 
@@ -341,25 +350,27 @@ secret, and **which one the operator picks is still undecided.**
    here; blocker 4 does not (step 2). A *partial* rollout is worse than none: a package
    published from a still-private repo is private, so a public downstream repo resolving it
    hits the masked-404 path in §6.1 and the chain stops somewhere in the middle, with some
-   coordinates already published and immutable.
-2. **Authorise the cross-repo package READS — pick one of two routes.** Going public does
-   not do this for you (§6.1, blocker 4). Neither route has been executed; the workflow
-   supports both.
-   - **Route A, no secret.** On each of `hugmesh-build-config`, `hugmesh-parent` and
-     `hugmesh-commons`: open the published Maven package → *Package settings* → **Manage
-     Actions access** → *Add repository*, and add every repository downstream of it
-     (`hugmesh-build-config` → parent, commons, auth-core; `hugmesh-parent` → commons,
-     auth-core; `hugmesh-commons` → auth-core). Six grants. They can only be made **after**
-     the package exists, which means route A cannot be completed before the first link
-     publishes — so on a first-ever run the chain has to be walked link by link, granting
-     as you go, rather than fired in one click.
-   - **Route B, one secret, works on a cold first run.** Create a PAT with `read:packages`
-     on the hugmesh org (classic `read:packages`, or fine-grained with *Packages: read* on
-     the four repos) and store it as **`PACKAGES_READ_TOKEN`** — an organisation secret
-     visible to the four repos, or a repo secret on each of parent, commons and auth-core.
-     `release.yml` prefers it and falls back to `GITHUB_TOKEN` when it is absent. **Route B
-     is the one to use for the launch-day single-click publish**; route A is the durable
-     shape afterwards.
+   coordinates already published and immutable. **Decided 2026-09-23, decision 90b = A:**
+   the sequencing is all four repos public in one sitting, *then* publish. Making them public
+   one at a time, strictly upstream first, was considered and not chosen.
+2. **Authorise the cross-repo package READS by creating the `PACKAGES_READ_TOKEN` secret.**
+   Going public does not do this for you (§6.1, blocker 4). **This is THE route (decision
+   90a = B, 2026-09-23), and it is kept** after launch, not retired. Create a PAT with
+   `read:packages` on the hugmesh org (classic `read:packages`, or fine-grained with
+   *Packages: read* on the four repos). Store it as **`PACKAGES_READ_TOKEN`**, an organisation
+   secret visible to the four repos. It is **separate from `RELEASE_CHAIN_TOKEN`** (step 3), and
+   neither one replaces the other. `release.yml` already prefers it over the `GITHUB_TOKEN`
+   fallback, so no workflow change is needed. It does not depend on any package existing
+   first, so it can serve a cold first run and the chain can be fired with one click. Not yet
+   executed: the secret is almost certainly absent today (§6.3), and creating it is the
+   operator's step.
+   - *Not the plan:* per-package **Manage Actions access** grants (formerly "route A": on each
+     upstream package, add every downstream repository). GitHub's docs list that setting only
+     for container, npm, NuGet and RubyGems packages, and say Maven packages inherit their
+     repository's permissions, so it is probably not offered for these Maven packages. That
+     is from the docs and is untested. Even where the setting exists, it can only be granted
+     after each package is published, so it could never serve a first run. Do not walk the
+     chain link by link to try it.
 3. **Create the cross-repo DISPATCH credential** — only if you want one click instead of
    four. A PAT with **Actions: read and write** on those four repos (fine-grained), or a
    classic token with `repo` + `workflow`, stored as **`RELEASE_CHAIN_TOKEN`** (an
@@ -400,10 +411,12 @@ secret, and **which one the operator picks is still undecided.**
   `gh api /repos/hugmesh/hugmesh-auth-core/actions/secrets` and
   `gh api /orgs/hugmesh/actions/secrets` answer **403** from this box. Almost certainly
   neither exists — nothing has ever needed them — but nobody here has looked.
-- **The cross-repo package grant has never been exercised in either route.** Route A's
-  *Manage Actions access* page cannot even be opened until a package exists, and route B's
-  PAT does not exist. The preflight's `401` branch is verified against the live registry;
-  its `200` branch is not, by anyone.
+- **The cross-repo package read has never been exercised.** The `PACKAGES_READ_TOKEN` PAT
+  (decision 90a = B) almost certainly does not exist yet (item above), and creating it is
+  operator-owned. The per-package *Manage Actions access* grant was never tried and is not
+  the plan. The claim that it is not offered for Maven packages comes from GitHub's docs, not
+  from a test. The preflight's `401` branch is verified against the live registry; its `200`
+  branch is not, by anyone.
 
 ---
 
