@@ -14,16 +14,18 @@
 #
 # IT IS INERT WITHOUT A SECRET, ON PURPOSE. secrets.GITHUB_TOKEN is scoped to THIS
 # repository and cannot dispatch a workflow in hugmesh-build-config / hugmesh-parent /
-# hugmesh-commons. Cross-repo dispatch needs an org-level PAT in RELEASE_CHAIN_TOKEN with
+# hugmesh-commons. Cross-repo dispatch needs a PAT in RELEASE_CHAIN_TOKEN with
 # Actions: read and write on all four repos (fine-grained), or classic `repo` + `workflow`.
+# Store it as a REPOSITORY secret on this repo (the only one that reads it): the org is on the
+# Free plan and the repos are private, and an org secret is understood not to reach private
+# repos on that plan (RELEASING.md section 6.2, "Secret scope").
 # Until that secret exists this workflow fails on its first step with that message — it
 # does not half-publish.
 #
-# BEFORE RUNNING IT, READ RELEASING.md section 6. The chain cannot succeed while these
-# repos are private for a reason that has nothing to do with this file: as of 2026-09-17 no
-# Actions job in this org starts at all. Measured on hugmesh-generator run 35288155335,
-# job 105424969429, whose only annotation is "The job was not started because recent
-# account payments have failed or your spending limit needs to be increased."
+# BEFORE RUNNING IT, READ RELEASING.md section 6. On 2026-09-17 no Actions job in this org
+# started at all (billing; hugmesh-generator run 35288155335, job 105424969429). Hosted
+# runners work again as of 2026-10-07, but this chain has still never been dispatched and
+# the secrets above were measured absent that day.
 name: Release chain
 
 on:
@@ -56,7 +58,7 @@ jobs:
             exit 1
           fi
           if [ -z "${CHAIN_TOKEN}" ]; then
-            echo "::error::secret RELEASE_CHAIN_TOKEN is not set. secrets.GITHUB_TOKEN is scoped to this repository and cannot dispatch a workflow in hugmesh-build-config, hugmesh-parent or hugmesh-commons. Create a PAT with Actions read+write on all four repos and store it as RELEASE_CHAIN_TOKEN (org secret, or a repo secret here). Nothing dispatched."
+            echo "::error::secret RELEASE_CHAIN_TOKEN is not set. secrets.GITHUB_TOKEN is scoped to this repository and cannot dispatch a workflow in hugmesh-build-config, hugmesh-parent or hugmesh-commons. Create a PAT with Actions read+write on all four repos and store it as RELEASE_CHAIN_TOKEN (repo secret on this repository; RELEASING.md section 6.2). Nothing dispatched."
             exit 1
           fi
           echo "confirmed; cross-repo credential present"

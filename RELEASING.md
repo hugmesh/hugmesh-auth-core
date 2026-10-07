@@ -297,7 +297,7 @@ own upstreams without an explicit grant.** Links 2–4 (`hugmesh-parent`, `hugme
 `hugmesh-auth-core`) each resolve `net.hugmesh` artifacts published from a *different*
 repository. `secrets.GITHUB_TOKEN` is scoped to the repository whose workflow is running,
 and GitHub does not extend it across repositories for package reads: the build has to present
-a token carrying `read:packages`. That token is the organisation secret **`PACKAGES_READ_TOKEN`**
+a token carrying `read:packages`. That token is the secret **`PACKAGES_READ_TOKEN`**
 (decision 90a = B, §6.2 step 2). GitHub also documents a per-package **Manage Actions access**
 grant, but that is **not the plan**: GitHub's docs list that setting only for container, npm,
 NuGet and RubyGems packages and say Maven packages inherit their repository's permissions, so
@@ -338,7 +338,7 @@ Two things now stand between that and the first real run:
   registry on 2026-09-18: with an invalid credential it emitted the `401` branch for all
   three upstreams and exited 1.
 
-Neither of those *grants* anything. The grant is the **`PACKAGES_READ_TOKEN`** organisation
+Neither of those *grants* anything. The grant is the **`PACKAGES_READ_TOKEN`**
 secret (§6.2 step 2). **Decided 2026-09-23, decision 90a = B:** one `read:packages` PAT, kept
 separate from `RELEASE_CHAIN_TOKEN`, created by the operator and **kept** as a standing secret.
 It is not a launch-only stopgap to be retired afterwards.
@@ -360,8 +360,10 @@ It is not a launch-only stopgap to be retired afterwards.
    hugmesh org's packages. It must be classic: GitHub's docs say *"GitHub Packages only
    supports authentication using a personal access token (classic)"*, so a fine-grained token
    would be answered 401 by `maven.pkg.github.com` (read from the docs on 2026-09-23, not
-   tested). Store it as **`PACKAGES_READ_TOKEN`**, an organisation secret visible to the four
-   repos. It is **separate from `RELEASE_CHAIN_TOKEN`** (step 3), and
+   tested). Store it as **`PACKAGES_READ_TOKEN`**. **Scope: a REPOSITORY secret** on each repo
+   whose `release.yml` reads it — `hugmesh-parent`, `hugmesh-commons`, `hugmesh-auth-core`
+   (`hugmesh-build-config` has no upstream and does not read it) — for as long as the repos
+   are private and the org is on the Free plan (see "Secret scope" below). It is **separate from `RELEASE_CHAIN_TOKEN`** (step 3), and
    neither one replaces the other. `release.yml` already prefers it over the `GITHUB_TOKEN`
    fallback, so no workflow change is needed. It does not depend on any package existing
    first, so it can serve a cold first run and the chain can be fired with one click. Not yet
@@ -376,9 +378,14 @@ It is not a launch-only stopgap to be retired afterwards.
      chain link by link to try it.
 3. **Create the cross-repo DISPATCH credential** — only if you want one click instead of
    four. A PAT with **Actions: read and write** on those four repos (fine-grained), or a
-   classic token with `repo` + `workflow`, stored as **`RELEASE_CHAIN_TOKEN`** (an
-   organisation secret visible to the four repos, or a repo secret on `hugmesh-auth-core`
-   alone). This is separate from `PACKAGES_READ_TOKEN` in step 2 and does **not** replace
+   classic token with `repo` + `workflow`, stored as **`RELEASE_CHAIN_TOKEN`** as a
+   **repository secret on `hugmesh-auth-core` only** — `release-chain.yml` lives here and is the
+   only workflow that reads it, so the other three repos need no copy (an organisation secret is
+   the alternative only once the org is upgraded or the repos are public; see "Secret scope"
+   below). Path: `github.com/hugmesh/hugmesh-auth-core/settings/secrets/actions` → *New
+   repository secret*; CLI: `gh secret set RELEASE_CHAIN_TOKEN --repo hugmesh/hugmesh-auth-core`
+   (prompts for the value, prints nothing). The token's owner must be able to dispatch workflows
+   in all four repos. This is separate from `PACKAGES_READ_TOKEN` in step 2 and does **not** replace
    it: `RELEASE_CHAIN_TOKEN` is read only by `release-chain.yml`'s `gh` calls and is never
    passed to maven. Each repo's own deploy step uses the automatic `secrets.GITHUB_TOKEN`,
    which is correct and needs nothing.
@@ -395,6 +402,19 @@ It is not a launch-only stopgap to be retired afterwards.
 6. **Add the `2.5.1` row** to `hugmesh-generator/tests/stack/m2-bootstrap.sh`'s `PINS` table
    and run `tests/stack/test-m2-bootstrap.sh` (§3.4).
 
+#### Secret scope: why "repository secret", not "organisation secret"
+
+`orgs/hugmesh` reports `plan.name = free` (read 2026-10-07), and all four repos are
+`private`. As understood from GitHub's plan limits, an organisation-level Actions secret
+cannot be exposed to PRIVATE repositories on the Free plan; it reaches only public ones until
+the org is upgraded. **This is from GitHub's documentation and the plan limits as understood,
+and is untested** — nobody here can create a secret, so nobody has tried. The consequence is
+safe either way: a **repository** secret works on any plan and any visibility, so use that
+while the repos are private. If it turns out an org secret does reach these repos, nothing
+here breaks; the repo secret simply shadows it (a repo secret of the same name wins over an
+org secret). Once the repos are public (step 1) an org secret scoped to the four repos is
+fine too.
+
 ### 6.3 What nobody has verified, and cannot verify from here
 
 - **No CI job has ever executed `.github/maven-ci-settings.xml`.** Its effective model is
@@ -408,12 +428,17 @@ It is not a launch-only stopgap to be retired afterwards.
   record locally-installed origins.
 - **`hugmesh-parent`'s runner JDK.** It pinned `java-version: '21'` while the metapom's
   `java.version` is 25; aligned to 25 on this round, still never executed.
-- **Whether `RELEASE_CHAIN_TOKEN` and `PACKAGES_READ_TOKEN` exist is an INFERENCE, not a
-  reading.** Listing repository or organisation secrets needs org-admin or the
-  `actions secrets` fine-grained permission; both
-  `gh api /repos/hugmesh/hugmesh-auth-core/actions/secrets` and
-  `gh api /orgs/hugmesh/actions/secrets` answer **403** from this box. Almost certainly
-  neither exists — nothing has ever needed them — but nobody here has looked.
+- **`RELEASE_CHAIN_TOKEN` and `PACKAGES_READ_TOKEN` are measured ABSENT (2026-10-07).** The
+  earlier text here recorded 403 on the secrets listings; that has changed and they now answer
+  200. `gh api repos/hugmesh/hugmesh-auth-core/actions/secrets` →
+  `{"total_count":0}` and `.../actions/organization-secrets` → `{"total_count":0}`; the same
+  two calls are empty on `hugmesh-build-config`, `hugmesh-parent` and `hugmesh-commons`. The
+  listing shows names only, never values, so presence of a *correct* token still cannot be
+  checked from here. `release-chain.yml` has never been dispatched (zero workflow runs in all
+  four repos), so its first step — which fails with `secret RELEASE_CHAIN_TOKEN is not set`
+  while the secret is absent — is the only part of it ever reasoned about; the rest is
+  unexercised. Its org-level listing `gh api /orgs/hugmesh/actions/secrets` is still not
+  readable with this box's token.
 - **The cross-repo package read has never been exercised.** The `PACKAGES_READ_TOKEN` PAT
   (decision 90a = B) almost certainly does not exist yet (item above), and creating it is
   operator-owned. The per-package *Manage Actions access* grant was never tried and is not
