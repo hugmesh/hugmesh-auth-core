@@ -50,10 +50,9 @@ jobs:
       #
       # The maven steps below resolve net.hugmesh artifacts published from OTHER
       # repositories. secrets.GITHUB_TOKEN is scoped to THIS repository, and GitHub does not
-      # hand it cross-repository package access automatically: each upstream package must
-      # either name this repository under "Manage Actions access" in its own package
-      # settings, or the build must present a token carrying read:packages. If neither is
-      # done, maven fails with
+      # hand it cross-repository package access automatically: the build must present a
+      # token carrying read:packages, which is the PACKAGES_READ_TOKEN secret (a classic
+      # PAT with read:packages; decision 90a = B). If it is not set, maven fails with
       #     Could not resolve net.hugmesh:hugmesh-parent:pom:2.8.0
       # which is the SAME string this repo's RELEASING.md and the comments below teach a
       # reader to interpret as "the upstream is not published yet". A reader who believes
@@ -76,9 +75,10 @@ jobs:
           if [ "${HAS_PACKAGES_READ_TOKEN}" = "true" ]; then
             echo "read credential: secrets.PACKAGES_READ_TOKEN (operator-held PAT)"
           else
-            echo "read credential: the automatic secrets.GITHUB_TOKEN. This can only read an"
-            echo "upstream package that has granted THIS repository under 'Manage Actions"
-            echo "access'. If it has not, the probe below says so explicitly. RELEASING.md 6.2."
+            echo "read credential: the automatic secrets.GITHUB_TOKEN (PACKAGES_READ_TOKEN is not set)."
+            echo "That token is scoped to THIS repository and may not read the upstream packages."
+            echo "Set the PACKAGES_READ_TOKEN secret (classic PAT, read:packages). If the probe"
+            echo "below fails, it says so explicitly. RELEASING.md 6.2."
           fi
           rc=0
           for upstream in hugmesh-build-config hugmesh-parent hugmesh-commons; do
@@ -89,7 +89,7 @@ jobs:
                 echo "  readable    hugmesh/${upstream}"
                 ;;
               401|403)
-                echo "::error::CANNOT AUTHENTICATE to hugmesh/${upstream} (HTTP ${code}). This is NOT 'the upstream is unpublished'. This runner's credential cannot read that repository's Maven registry. Fix: grant this repository under that package's 'Manage Actions access', or set the PACKAGES_READ_TOKEN secret to a PAT with read:packages. See RELEASING.md 6.2."
+                echo "::error::CANNOT AUTHENTICATE to hugmesh/${upstream} (HTTP ${code}). This is NOT 'the upstream is unpublished'. This runner's credential cannot read that repository's Maven registry. Fix: set the PACKAGES_READ_TOKEN repo secret (classic PAT, read:packages), or share the org secret of that name with this repository. See RELEASING.md 6.2."
                 rc=1
                 ;;
               404)
@@ -119,8 +119,8 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-repo READS use their own credential - see the settings file header
-          # and RELEASING.md 6.2. Falls back to GITHUB_TOKEN, which is correct only
-          # once each upstream package grants this repo 'Manage Actions access'.
+          # and RELEASING.md 6.2. Falls back to GITHUB_TOKEN when PACKAGES_READ_TOKEN is
+          # unset; the preflight step above reports that case.
           UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
           UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -141,7 +141,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-repo READS use their own credential - see the settings file header
-          # and RELEASING.md 6.2. Falls back to GITHUB_TOKEN, which is correct only
-          # once each upstream package grants this repo 'Manage Actions access'.
+          # and RELEASING.md 6.2. Falls back to GITHUB_TOKEN when PACKAGES_READ_TOKEN is
+          # unset; the preflight step above reports that case.
           UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
           UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
