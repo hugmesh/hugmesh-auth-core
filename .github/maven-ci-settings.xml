@@ -60,22 +60,21 @@
 
   The `github-hugmesh-*` servers READ packages published from OTHER repositories, and the
   automatic GITHUB_TOKEN is scoped to the repository whose workflow is running. GitHub does
-  not grant it cross-repository package access by default: the package has to name this
-  repository under "Manage Actions access" in its own package settings, or the build has to
-  present a token that carries read:packages for the owner. Wiring these servers to
-  ${env.GITHUB_TOKEN} would therefore work only if somebody remembered to click the grant,
-  and would fail as `Could not resolve net.hugmesh:...`, the exact string this repo's docs
+  not grant it cross-repository package access by default, so the build has to present a
+  token that carries read:packages for the owner (the PACKAGES_READ_TOKEN secret). Wiring
+  these servers to ${env.GITHUB_TOKEN} would therefore fail as
+  `Could not resolve net.hugmesh:...`, the exact string this repo's docs
   teach a reader to interpret as "the upstream is not published yet". That misdiagnosis is
   the cost this split exists to avoid.
 
   So the read credential is its own env var. release.yml injects
       UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
   which means: use the operator's read:packages PAT if one exists, otherwise fall back to
-  the automatic token (correct once the per-package Actions-access grant is in place). The
+  the automatic token (the preflight reports when that cannot read the upstream). The
   "Preflight, cross-repo package read" step in release.yml probes the upstream registries
   with this credential BEFORE maven runs, and reports an authorisation failure as an
-  authorisation failure. RELEASING.md section 6.2 carries the operator's choice between the
-  two routes. NEITHER IS VERIFIED. No CI job in this org has ever started (billing).
+  authorisation failure. RELEASING.md section 6.2 carries the operator's steps for setting
+  PACKAGES_READ_TOKEN. THIS IS NOT VERIFIED. No CI job in this org has ever started (billing).
 -->
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
