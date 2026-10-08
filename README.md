@@ -31,17 +31,21 @@ POSTs to `/bff/login`; **user-bff** generates PKCE+state **server-side** and cal
 **internal** Casdoor `/api/login`, then exchanges the code and holds per-session JWT
 custody/refresh. The browser is **never redirected to Casdoor** and only ever holds an
 **opaque `bff_`-prefixed session** — the user never sees their own Casdoor JWT. The gateway
-is a pure Casdoor-JWT OAuth2 resource server: a pre-security exchange filter swaps `bff_` →
-the internal custody JWT, then the
-gateway's JWT validation + the data-driven `GatewayRouteAccessFilter`
-(`gateway_route_access` Postgres table is the source of truth) run unchanged
-(ADMIN/GAME-MASTER bypass within own domain, SUPERADMIN cross-domain).
+is a pure Casdoor-JWT OAuth2 resource server. `BffSessionAuthFilter` (on unless
+`APP_BFF_SESSION_ENABLED=false`) introspects a `bff_` session through admin-bff's
+`GET /bff/internal/session/introspect`. A pre-security exchange filter (`BffJwtExchangeWebFilter`,
+gated by `hugmesh.gateway.bff-exchange.enabled`: default `false` in the gateway image, `true` in the
+generator's gateway-fe app) swaps `bff_` → the internal custody JWT through admin-bff's
+`POST /bff/internal/session/exchange`. Then the gateway's JWT validation + the data-driven
+`GatewayRouteAccessFilter` (`gateway_route_access` Postgres table is the source of truth) run
+unchanged (ADMIN/GAME-MASTER bypass within own domain, SUPERADMIN cross-domain).
 
 This jar is the **shared stateful substrate** behind that flow: the account/session/MFA
 stores and Casdoor-admin client that user-bff (login/session custody) and admin-bff
 (account reads + MFA step-up) both build on. Login/session/account logic is being
 **relocated from admin-bff to user-bff**; the reusable pieces land here so both BFFs share
-one implementation while the account/session **data** continues to live in admin-bff-db.
+one implementation while the account/session **data** continues to live in admin-bff-db. The move
+is not finished: admin-bff's `AuthController` still mints sessions (`store.newSession`, line 381).
 
 ### Native-login sequence
 
@@ -61,23 +65,32 @@ sequenceDiagram
     Casdoor-->>UserBFF: authorization code
     UserBFF->>Casdoor: OidcExchangeClient redeems code for tokens
     Casdoor-->>UserBFF: id_token, access_token, refresh_token
-    UserBFF->>UserBFF: AccountStore.ensureAccount syncs Casdoor roles
-    UserBFF->>UserBFF: AccountStore.newSession, stampCustody via BffCustodyCipher
-    UserBFF-->>Browser: opaque bff_ session (cookie or bearer)
+    UserBFF->>AdminBFF: POST /bff/internal/accounts/ensure
+    AdminBFF->>AdminBFF: AccountStore.ensureAccount syncs Casdoor roles
+    UserBFF->>AdminBFF: POST /bff/internal/sessions
+    AdminBFF->>AdminBFF: AccountStore.newSession
+    UserBFF->>UserBFF: BffCustodyCipher encrypts the tokens
+    UserBFF->>AdminBFF: POST /bff/internal/custody/stamp (ciphertext only)
+    AdminBFF->>AdminBFF: AccountStore.stampCustody
+    UserBFF-->>Browser: opaque bff_ session cookie
 
     Browser->>Gateway: request carrying the bff_ session
-    Gateway->>Gateway: BffSessionAuthFilter authenticates the session
-    Gateway->>AdminBFF: exchange filter swaps bff_ for the internal custody JWT
+    Gateway->>AdminBFF: BffSessionAuthFilter: GET /bff/internal/session/introspect
+    Gateway->>AdminBFF: exchange filter (when enabled): POST /bff/internal/session/exchange
+    AdminBFF-->>Gateway: internal custody JWT
+    Gateway->>AdminBFF: request forwarded (an admin-bff route, as the example)
     AdminBFF->>AdminBFF: BffCookieAuthenticationWebFilter resolves AccountStore.sessionOfToken
     AdminBFF-->>Gateway: response
     Gateway-->>Browser: response
 ```
 
 The browser only ever holds the opaque `bff_` value; every Casdoor/custody token stays
-server-side, encrypted at rest by `BffCustodyCipher` when custody is stamped. `login-ui`,
-`gateway`, and `Casdoor` itself live outside this repo — this diagram traces where
-auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
-`BffCookieAuthenticationWebFilter`) sit in that cross-service flow.
+server-side, encrypted at rest by `BffCustodyCipher`. user-bff encrypts the tokens, and admin-bff
+stores the ciphertext as it is. user-bff has no database access to the account tables, so
+`AccountStore` runs inside admin-bff (the Data ownership rule above). `login-ui`, `gateway`, and
+`Casdoor` itself live outside this repo — this diagram traces where auth-core's own classes
+(`OidcExchangeClient`, `BffCustodyCipher`, `AccountStore`, `BffCookieAuthenticationWebFilter`)
+sit in that cross-service flow.
 
 ## Status (extraction landed)
 - ✅ `account/` — Account, AccountRow(+repo), AccountStatus, AccountStore, Allowlist(+repo),
@@ -118,13 +131,14 @@ degradation into an outage:
 
 - hugmesh-generator `specs/cluster/manifests/admin-bff-api/deployment.yaml` sets
   `APP_CASDOOR_MFA_ENABLED: "true"` (MFA is **armed** in-cluster) and sources `APP_MFA_FACTOR_KEY`
-  from an External-Secrets `secretKeyRef`. Historically that ref was marked `optional: true`
-  ("*so the pod still starts if the Secret is somehow absent*"); the 2.4.2 release chain drops
-  that (generator `fix/mfa-factor-key-required`), so in-cluster a genuinely absent Secret now
-  blocks pod start at the Kubernetes layer (`CreateContainerConfigError`) before this guard ever
-  runs. The guard still matters for every OTHER misconfiguration shape — key present but the
-  WebAuthn properties absent, compose, bare-metal runs — which is exactly the degraded-but-running
-  band below.
+  from an External-Secrets `secretKeyRef`. That ref used to carry `optional: true`
+  ("*so the pod still starts if the Secret is somehow absent*"). Generator #508 (`087130a4`)
+  dropped it: `deployment.yaml:651-655` has no `optional` now, so in-cluster a genuinely absent
+  Secret blocks pod start at the Kubernetes layer (`CreateContainerConfigError`) before this guard
+  ever runs. The same manifest sets a real `APP_MFA_WEBAUTHN_RP_ID` and
+  `APP_MFA_WEBAUTHN_ORIGINS` (`admin.hugmesh.net`, lines 170-173). The guard still matters for every
+  OTHER misconfiguration shape — compose, bare-metal runs, a brand whose manifest lost the
+  WebAuthn properties — which is exactly the degraded-but-running band below.
 - The local compose stack (`tests/stack/compose.local.yaml`) runs MFA on with **neither** WebAuthn
   property set, and its `dev` profile is only the `ADMIN_BFF_PROFILES` default.
 
@@ -136,9 +150,8 @@ brand/tenant where `gen-cluster-secrets` was not re-run, or on a Vault path typo
 operators out of the plane they would use to fix it. So the default is to *tell* them, precisely
 and unmissably (`*** MFA MISCONFIGURED ***`, every property and env var named, the consequence
 spelled out, and the opt-in named), and keep serving. Turning it fatal is a per-deployment
-decision; the k8s-layer half of the sequencing — dropping `optional: true` from that
-`secretKeyRef` — ships in the same release chain as 2.4.2, so the fully-absent-Secret case is
-already fronted by the scheduler in-cluster.
+decision; the k8s-layer half — dropping `optional: true` from that `secretKeyRef` — has landed
+(generator #508), so the fully-absent-Secret case is already fronted by the scheduler in-cluster.
 
 No actuator health indicator is offered: this module has **no** `spring-boot-actuator` dependency
 and no health-contributor precedent, and a shared auth jar is the wrong place to acquire one.
@@ -150,12 +163,10 @@ because whether a pod comes up is decided by `refresh()` completing, not by a me
 class is **released in 2.4.2** — the version was bumped precisely because the GitLab
 `deploy:maven` job re-runs `deploy` at whatever version the pom holds on every `main` merge, so
 leaving the pom at 2.4.1 would leave every later merge re-deploying over a coordinate consumers
-already pin. A consumer
-picks the guard up by repointing its dependency to 2.4.2. The `optional: true` drop on the
-`admin-bff-mfa` `secretKeyRef` ships in the same release chain (generator
-`fix/mfa-factor-key-required`, pinned by that repo's `[mfa-factor-key]` manifest-integrity
-check), so the missing-secret case surfaces at the Kubernetes layer with a clear reason rather
-than as a running-but-degraded pod; turning this guard *fatal*
+already pin. A consumer picks the guard up by pinning 2.4.2 or later (admin-bff pins 2.5.0,
+user-bff 2.4.2). Only admin-bff scans `net.hugmesh.authcore`, so only admin-bff runs it. The
+generator pins the `admin-bff-mfa` `secretKeyRef` with its `[mfa-factor-key]` manifest-integrity
+check (`tests/scripts/cluster_manifest_integrity.py`). Turning this guard *fatal*
 (`app.mfa.preconditions.fail-fast=true`) remains a separate per-deployment decision for the
 misconfiguration shapes the scheduler cannot see.
 
@@ -182,13 +193,13 @@ from `~/.m2`) — runs the full test suite as part of `package`. A handful of MF
 tests need a real Postgres via Testcontainers, so a local run also needs Docker (or `-Dtest=
 '!*PostgresTest'` to skip just those). `./mvnw -o clean verify` additionally runs PMD +
 Checkstyle + SpotBugs (see Current State / Known Gaps for their actual current enforcement
-status). Re-verified 2026-07-30: `clean test` with Docker available — the **whole** suite green
-(`Failures: 0, Errors: 0, Skipped: 0`; without Docker the Postgres slices are the only thing that
-drops out), 0 Checkstyle/PMD violations, BUILD
-SUCCESS. Re-verified 2026-08-20: `clean verify` (which the `hugmesh-parent` 2.8.0 bump put in
-genuine fail mode via `failOnError`, not the no-op `failOnViolation` the historical 2.7.0 config
-used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — since the repo-local
-`spotbugs/exclude-filter.xml` triaged the 8 `EI_EXPOSE_REP2` findings (see Known Gaps).
+status). Measured 2026-10-07 at `2984fc8`: `./mvnw -o -B clean verify '-Dtest=!*PostgresTest'` (the four
+`*PostgresTest` classes skipped, no Docker started) is **BUILD SUCCESS** — 513 tests, `Failures: 0,
+Errors: 0, Skipped: 0`, 0 Checkstyle violations, `BugInstance size is 0`. The last run of the whole
+suite with Docker was 2026-08-20: `clean verify`, 450 tests green. `clean verify` is in genuine fail
+mode since the `hugmesh-parent` 2.8.0 bump (`failOnError`, not the no-op `failOnViolation` the
+historical 2.7.0 config used), and the repo-local `spotbugs/exclude-filter.xml` triaged the 8
+`EI_EXPOSE_REP2` findings (see Known Gaps).
 
 ## Current State
 - **Version 2.5.1** on the unified HugMesh ecosystem baseline: **Spring Boot 4.0.7 /
@@ -197,16 +208,20 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   `verify` and pins **testcontainers 2.0.5**; PMD and Checkstyle fail on violation, and — as
   of the 2.8.0 bump — SpotBugs is genuinely in fail mode too (via `failOnError`); see Known
   Gaps for how this module's 8 findings were triaged).
-- Depends on `hugmesh-commons` **2.1.0** (stateless security/tenancy; #23 pinned the
-  real coordinate — a `2.7.0` commons was never published). **No cycle** —
+- Depends on `hugmesh-commons` **2.1.0** (stateless security/tenancy; a `2.7.0` commons was never
+  published — #23 pinned `2.0.0`, and the rebrand, #36, moved the pin to `2.1.0`). **No cycle** —
   commons does not depend on this core.
-- **Consumers: `user-bff` and `admin-bff` only.** The gateway depends on commons, NOT on
-  this jar (keeping r2dbc/casdoor/mfa off the gateway classpath, per the rationale above).
-- Reactive throughout: **Spring Data R2DBC** repositories (no raw SQL strings / inline
-  `@Query`), matching the org data-access standard. Crypto via BouncyCastle
-  (AES-256-GCM); MFA via **webauthn4j 0.31.7** (WebAuthn) + TOTP. webauthn4j 0.31 migrated
-  internally to Jackson 3 (`tools.jackson`), aligned with this module's Boot 4 / Jackson 3
-  stack; `WebAuthnService` uses the `CredentialRecord` API.
+- **Consumers: `user-bff` and `admin-bff` only.** admin-bff pins 2.5.0 (`pom.xml:155`), user-bff
+  2.4.2 (`pom.xml:98`); 2.5.1 is unpublished and no consumer pins it. The gateway depends on
+  commons, NOT on this jar (keeping r2dbc/casdoor/mfa off the gateway classpath, per the rationale
+  above).
+- Reactive throughout: **Spring Data R2DBC** repositories and no raw `DatabaseClient`, matching the
+  org data-access standard. Hand-written SQL sits in `@Query` static-final constants on the
+  repositories (for example `AllowlistRepository.insertIfAbsent`, the MFA `INSERT ... RETURNING`).
+  Crypto is the JDK's `AES/GCM/NoPadding` (`BffCustodyCipher`, `MfaSecretCipher`) and
+  `HmacSHA256` (`RecoveryCodeService`). `pom.xml` declares BouncyCastle 1.84, but no class in
+  `src/main` imports it. MFA via **webauthn4j 0.31.7** (WebAuthn) + TOTP; `WebAuthnService` uses the
+  `CredentialRecord` API and reads JSON through `com.fasterxml.jackson.databind`.
 - **Username gate presents a Casdoor ROLE_SERVICE bearer (2.5.1)**: `FederationUsernameClient`
   takes an optional `Supplier<Mono<String>>` service bearer (5-arg constructor; the 4-arg one
   remains) and `FederationUsernameConfig` wires `casdoor/CasdoorServiceTokenClient` — a cached
@@ -221,8 +236,8 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   session mint** — `AccountStore.newSession` leaves them null, so a pre-band-180 (2.0.0)
   consumer reads them as null. The custody passthrough lands as `AccountStore.stampCustody`
   / `clearCustody` (delegating to `BffSessionRepository`) plus `AccountStore.sessionRow`,
-  which the dark custody endpoints use to stamp/clear/read per-session encrypted tokens for
-  the opaque `bff_`-session custody model.
+  which admin-bff's `/bff/internal` custody endpoints use to stamp/clear/read per-session
+  encrypted tokens for the opaque `bff_`-session custody model.
 - **List a user's sessions by account (2.2.0)**: `AccountStore.sessionsForAccount` plus the
   `BffSessionRepository.findByAccountIdAndExpiresAtAfterOrderByCreatedAtDesc` derived finder
   back the "my active sessions" read for the session-management UI. The `accountId` MUST be
@@ -249,13 +264,13 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
 - **DB-generated MFA UUID PKs (2.3.0)**: the `mfa_factor` / `mfa_recovery_code` /
   `webauthn_credential` / `webauthn_challenge` `id` columns are NO LONGER minted in Java —
   the production columns carry a `DEFAULT (gen_random_uuid())::text` (admin-bff changeset
-  151/152), so the enroll INSERT OMITS `id` and appends `RETURNING id` to read the
+  210, on tables created by changesets 151/152), so the enroll INSERT OMITS `id` and appends `RETURNING id` to read the
   database-generated UUID back (a plain non-`@Modifying` `@Query` returning `Mono<String>`).
   The MFA-repo data-slice tests run on **real Postgres** (commons `PostgresTestSupport` /
   Testcontainers), since `gen_random_uuid()` and `INSERT ... RETURNING` are Postgres features
   H2 does not honour.
 - **Code-side-lens MFA enums**: `FactorType` (`TOTP`|`WEBAUTHN`, the `mfa_factor.type`
-  discriminator) and `CeremonyType` (registration|assertion, the
+  discriminator) and `CeremonyType` (`register`|`assert`, the
   `webauthn_challenge.ceremony_type` discriminator) wrap the app-owned closed vocabularies as
   `@JsonValue`/`@JsonCreator` lenses over the persisted String columns — R2DBC mapping stays
   byte-identical and the legacy `TYPE_TOTP`/`TYPE_WEBAUTHN` constants delegate to the enum.
@@ -270,8 +285,8 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   real Spring Security `Authentication`, so a consumer's own `hasAnyRole()`/`.authenticated()`
   gates (previously only reachable by a real Casdoor JWT, since `oauth2ResourceServer().jwt()`
   is correctly inert to an opaque token) also see native-login sessions. Only works for a
-  service with a LOCAL `AccountStore` bean (today: admin-bff only) — user-bff/mod-bff/
-  federation-api need a different, HTTP-based bridge (see Known Gaps).
+  service with a LOCAL `AccountStore` bean (today: admin-bff only). user-bff and mod-bff carry
+  their own HTTP-based bridges instead (see Known Gaps).
 - **Gated outbound mTLS for the OIDC token exchange**: `OidcExchangeClientSsl` optionally
   routes `OidcExchangeClient`'s Casdoor token-endpoint calls (the PKCE code/refresh leg, which
   carries `client_secret` + tokens) through client-cert + cluster-CA mTLS, mirroring
@@ -279,8 +294,10 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   Default OFF; degrades to plain HTTP with a warning if the gate is on but the keystore file
   is absent, so a misconfigured pod never crash-loops on boot.
 - **Reserved-username canonical sync (2.3.3, extended in 2.4.1)**: `ReservedNames.RESERVED`
-  carries the full 82-label canonical set (`reserved/ReservedNames.java`), kept byte-for-byte
-  in sync with the independent copies in `hugmesh-federation-api` and `hugmesh-actions`.
+  carries the full 82-label canonical set (`reserved/ReservedNames.java`), kept in sync with the
+  independent copies in `hugmesh-federation-api` and `hugmesh-actions`. Compared on 2026-10-07, the
+  `hugmesh-actions` set is identical, and the `hugmesh-federation-api` set differs only in the case
+  of `remoteEntry.json`.
   2.4.1 reconciled canonical `reserved-prefixes.yaml` revisions 7-9: `hmdm` + `attest`
   (Headwind MDM / AttestationServer tailnet superadmin-gateway route prefixes) and
   `character-forge` + `games-character-forge` + `games-shadows-of-the-net` (the Character
@@ -304,21 +321,17 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   `@`-bearing Casdoor role-member id that could never match a real role membership; and
   `AccountStore.idFor` (plus both `ensureAccount` overloads) now folds the write-side account
   id via `trim() + toLowerCase(Locale.ROOT)`, matching the gateway's equivalent read-side fold.
-- **Extraction landed**: all packages from the blueprint — `account/`, `casdoor/`, `mfa/`,
-  `config/` (session-cookie + internal-token filters + boot guard + the service-local `bff_`
-  bridge), `provision/`, `reserved/`, `username/`, `web/dto/` — have been extracted from
-  admin-bff; admin-bff + user-bff adopt this jar as login relocates to user-bff.
 - **No `spring.cloud.gateway.*` route config lives here** — this is a library, not a
   gateway; the SCG-5 route-namespace move
   (`spring.cloud.gateway.routes` → `spring.cloud.gateway.server.webflux.routes`) is a
   gateway/generator concern and does not touch this module.
-- **Release/CI, corrected 2026-09-16 — this bullet used to read "CI is GitLab (no GitHub
-  Actions)", and both halves are now wrong.** There IS a GitHub Actions workflow
-  (`.github/workflows/release.yml`, `workflow_dispatch`-only, **zero runs to date**), and the
-  GitLab path is the one that cannot run: no repo carries a GitLab remote and
-  `gitlab.hugmesh.net` does not resolve (that host is deployed BY the mesh, see
-  `hugmesh-generator/specs/cluster/apps/03-gitlab.yaml`). Single `main` branch. The measured
-  release procedure, what still blocks a publish, and the consumer chain are in
+- **Release/CI.** Two GitHub Actions workflows exist, both `workflow_dispatch`-only:
+  `.github/workflows/release.yml` and `.github/workflows/release-chain.yml`. `gh run list` shows
+  **zero runs to date** (2026-10-07). The GitLab path (`.gitlab-ci.yml`) cannot run: no repo carries
+  a GitLab remote and `gitlab.hugmesh.net` does not resolve (that host is deployed BY the mesh, see
+  `hugmesh-generator/specs/cluster/apps/03-gitlab.yaml`). `main` is the only long-lived branch (the
+  remote also holds short-lived `iss/*`, `fix/*` and `docs/*` branches). The measured release
+  procedure, what still blocks a publish, and the consumer chain are in
   [`RELEASING.md`](RELEASING.md); per-version notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Known Gaps / TODO
@@ -327,33 +340,33 @@ Verified against the current code (no invented gaps):
   the cross-brand gap this entry used to describe is CLOSED. This jar offers the domain-scoped
   gate (`AllowlistRepository.existsByProviderAndHandleAndDomain`,
   `AccountStore.isEmailInvited(email, domain)` / `isDiscordInvited(handle, domain)`) and
-  **deprecates** the unscoped overloads; the only consumer that called them, admin-bff,
-  migrated its three request handlers in hugmesh/hugmesh-admin-bff-api#46. What that migration
+  **deprecates** the unscoped `AccountStore` overloads; the only consumer that called them,
+  admin-bff, migrated its three request handlers in hugmesh/hugmesh-admin-bff-api#46 (merged). What that migration
   does is NOT uniform across those handlers, so state it exactly:
   - **The two PUBLIC pre-auth handlers derive the domain server-side.**
     `AuthController.registerGoogle` / `registerDiscord` pass
-    `RegistrationDomainResolver.forRegistration(auth)`: the forwarded token's *trusted* issuer
-    (strict membership of a configured, NON-EMPTY trusted-issuer set), else an
-    `app.tenancy.registration-domain` per-deployment pin, else the deployment's only known
-    brand (`"default"` on an untenanted install, which keeps single-tenant behaviour
+    `RegistrationDomainResolver.forRegistration(auth)`: an `app.tenancy.registration-domain`
+    per-deployment pin first (it outranks a forwarded token, so a valid brand-A token cannot satisfy
+    brand-B's gate), else the forwarded token's *trusted* issuer (strict membership of a
+    configured, NON-EMPTY trusted-issuer set), else the deployment's only known brand (`"default"` on an untenanted install, which keeps single-tenant behaviour
     unchanged), else **fail closed** on the `PrincipalDomain.NO_DOMAIN` sentinel, which begins
     with a space and so matches no sanitized domain and no row. Never a request-body field and
     never the `Host` header — a caller-chosen domain there would re-open this exact hole.
-  - **The INTERNAL invite read DOES honour a caller-supplied domain, on purpose.**
-    `InternalAccountController#allowlist` (`GET /bff/internal/allowlist/{provider}/{handle}`,
-    the invite-gate read the tracking issue mis-names `ensureAccount`) takes an optional
-    `?domain=` and `RegistrationDomainResolver.forInternalCaller` returns it **verbatim** — it
-    is NOT validated against `DomainRegistry` membership. That surface is mTLS +
+  - **The INTERNAL invite read DOES honour a caller-supplied domain, on purpose, but only a
+    brand the deployment serves.** `InternalAccountController#allowlist`
+    (`GET /bff/internal/allowlist/{provider}/{handle}`, the invite-gate read the tracking issue
+    mis-names `ensureAccount`) takes an optional `?domain=`. That surface is mTLS +
     `X-Internal-Token` guarded and carries no untrusted principal, so the trusted in-cluster
     caller (user-bff, which holds the validated token that hop lost) is the party that knows
-    the brand; omitting the parameter degrades to the same fallback chain above, which is why
-    today's callers keep their single-brand answer. Its scoping therefore rests on the
-    internal-surface guard, not on server-side derivation. Gating `forInternalCaller` on
-    `DomainRegistry.isKnownDomain(...)` and failing closed otherwise is a cheap
-    defence-in-depth follow-up, and belongs to admin-bff, not this jar.
-  Also still open here: `existsByProviderAndHandle` / the 1-arg `isEmailInvited` /
-  `isDiscordInvited` remain **on the API surface**, `@Deprecated` but callable, so a future
-  call site can re-open the hole by picking the shorter overload. Deleting them is a breaking
+    the brand. `RegistrationDomainResolver.forInternalCaller` (`RegistrationDomainResolver.java:158-174`,
+    admin-bff issue #47) accepts it only when `DomainRegistry.isKnownDomain(...)` is true or it
+    equals the deployment's own pin or fallback brand; any other value fails closed to
+    `NO_DOMAIN`. Omitting the parameter degrades to the same fallback chain above, which is why
+    today's callers keep their single-brand answer.
+  Also still open here: the 1-arg `AccountStore.isEmailInvited` / `isDiscordInvited` are
+  `@Deprecated` (lines 147 and 158) but callable, and `AllowlistRepository.existsByProviderAndHandle`
+  carries a deprecation note in its Javadoc but no `@Deprecated` annotation. All three remain **on
+  the API surface**, so a future call site can re-open the hole by picking the shorter overload. Deleting them is a breaking
   library change that needs a version bump the org's Maven registry must publish before any
   consumer can build again, so it is a deliberate follow-up, not part of this fix.
 - **Gateway revocation writes are a no-op unless explicitly enabled** —
@@ -366,8 +379,8 @@ Verified against the current code (no invented gaps):
   deliberately** (issue #7 decision, 2026-09-01): the only runtime consumer of this bean,
   admin-bff, binds the property in its own `application.yml` as
   `${BROKER_GATEWAY_REVOCATION_ENABLED:false}`, so this `@Value` fallback is never even
-  consulted there — flipping it here would change nothing for admin-bff (which also pins
-  auth-core 2.4.2) while silently turning on gateway HTTP calls for any future consumer
+  consulted there — flipping it here would change nothing for admin-bff (which pins
+  auth-core 2.5.0) while silently turning on gateway HTTP calls for any future consumer
   that scans `net.hugmesh.authcore` without binding the property. The real switch is the
   consumer deployment's `BROKER_GATEWAY_REVOCATION_ENABLED` env var (tracked
   consumer-side in hugmesh-admin-bff-api). Both branches of the toggle ARE now covered
@@ -375,31 +388,36 @@ Verified against the current code (no invented gaps):
   disabled ⇒ zero wire traffic even with a reachable gateway, and enabled ⇒ the real
   POST/DELETE contract (key shapes, optional `reason`, 30-day TTL default substitution,
   best-effort swallow of live 5xx responses).
-- **MFA step-up is wired end to end but ships DARK** — everything this jar owns is in
-  place: `BffStoredMfaFactorVerifier` is the `@Component @Primary` `MfaFactorVerifier`
+- **MFA step-up: this jar's half is done; the enforcement flag ships off.** Two flags are in play.
+  `app.casdoor.mfa.enabled` (`APP_CASDOOR_MFA_ENABLED`, default `false`) arms this jar's challenge
+  and enrollment endpoints; the generator sets it `true` on admin-bff in the reference cluster
+  (`deployment.yaml:636`). `app.mfa.enabled` (`APP_MFA_ENABLED`, default `false`) is the gateway's
+  and the BFFs' enforcement switch, and the cluster ships it `false`. hugmesh-auth-core#2 (wire real
+  MFA step-up verification end to end) is still open. Everything this jar owns is in place: `BffStoredMfaFactorVerifier` is the `@Component @Primary` `MfaFactorVerifier`
   (so `MfaChallengeConfig`'s `@ConditionalOnMissingBean` deny-all default never wins), and
   `BffCookieAuthenticationWebFilter` grants `MFA_SATISFIED` from the session's
   freshness-validated `mfa_satisfied_at` (`AccountStore.mfaStateOf`). The consumer-side
-  enforcement landed too (admin-bff's nine gates behind `AbstractStepUpGate`, mod-bff's
+  enforcement landed too (admin-bff's eight gates behind `AbstractStepUpGate`, mod-bff's
   write-effect gate, forum-bff's admin/moderation routes; the `MFA=1` switch is
   hugmesh-generator#70). What is NOT flipped: `app.mfa.enabled` defaults to `false`
   org-wide, and the reference-cluster flip is an operator step (generator
   `docs/MFA-ROLLOUT.md` §3 step 6, tracked on hugmesh-generator#47). The one remaining
   piece of *design*, per-role MFA defaults, lives in hugmesh-generator's route-access seed
-  (its `mfa_required` predicate is keyed on `url_pattern`, never on `role`) — not in
-  this jar.
+  (`20-schema.sql`: the blanket `mfa_required` UPDATE selects rows by `allow` and `url_pattern`,
+  not by role; only the row-scoped `/bff/superadmin/games-services/**` UPDATE names
+  `ROLE_SUPERADMIN`) — not in this jar.
 - **SSO end-to-end + e2e tests** — the live Casdoor OIDC (PKCE) → opaque `bff_` session
-  flow and the gateway exchange-filter path are called out in the Roadmap as not yet
-  covered by end-to-end tests.
+  flow and the gateway exchange-filter path are not yet covered end to end
+  (hugmesh-auth-core#4, open). The generator's `tests/e2e/specs/27-native-login.spec.ts` covers
+  the native `POST /bff/login` form and the cookie it mints.
 - **`BffCookieAuthenticationWebFilter` only bridges services with a LOCAL `AccountStore`** —
   it resolves a `bff_` session by calling `AccountStore` directly against the DB, so it only
   works where the service owns the accounts/bff_session tables itself (today: admin-bff).
-  user-bff, mod-bff, and federation-api have the identical gap on their own
-  `hasAnyRole()`/`.authenticated()` gates but don't have local DB access to those tables —
-  they need a different, HTTP-based bridge that resolves the session over the network
-  (mirroring the gateway's own `BffSessionAuthFilter`) instead of this class. Documented as
-  an intentional, tracked follow-up in the filter's own class-level Javadoc
-  (`config/BffCookieAuthenticationWebFilter.java`); not yet implemented anywhere.
+  Services without that database access need an HTTP-based bridge (mirroring the gateway's own
+  `BffSessionAuthFilter`). Two have one, each in its own repo and not shared through this jar:
+  user-bff (`config/BffSessionAuthenticationWebFilter`, via `AdminBffInternalClient`) and mod-bff
+  (`auth/BffCookieAuthenticationWebFilter`, via `AdminBffSessionIntrospectClient`). forum-bff-api
+  and federation-api carry none. Tracked in hugmesh-auth-core#3 (open).
 - **The Casdoor UUID `sub` is deliberately NOT carried by this module — resolved, not
   pending.** This list used to ask whether a consumer would ever need the raw Casdoor
   subject (`Account` is `{id, provider, handle, registrationComplete, roles}` and
@@ -442,12 +460,12 @@ Verified against the current code (no invented gaps):
   bearer still boots but WARNs at startup; a bearer mint failure, an empty supplier, an empty
   2xx body and a non-2xx all fail closed. The 4-arg constructor and the legacy header stay
   (wire-compatible; the header is stamped alongside the bearer when configured). **Still
-  consumer-side, not this jar** — tracked as hugmesh-generator#376: admin-bff pins 2.4.2 and
+  consumer-side, not this jar** — tracked as hugmesh-generator#376: admin-bff pins 2.5.0 and
   must adopt a published build carrying this; its manifest sets neither
   `APP_CASDOOR_PLATFORM_*` nor `HUGMESH_MTLS_CLIENT_ENABLED`; and the Casdoor application
   named by `client-id` must hold the `service` role or federation answers 403. No version bump
-  here: 2.5.1 is unpublished (hugmesh-generator#347 decision 15 is still open) and no consumer
-  pins it.
+  here: 2.5.1 is prepared but unpublished (hugmesh-generator#347 decided on 2026-09-16 to publish
+  it; the blockers are in `RELEASING.md` §6) and no consumer pins it.
 - **SpotBugs is genuinely fail-mode, and `./mvnw -o clean verify` is now GREEN — re-verified
   by running the real build** (`./mvnw -o clean verify`, 2026-08-20, against the
   `hugmesh-parent` 2.8.0 / `hugmesh-build-config` 0.5.0 this module resolves): 450 tests,
@@ -480,10 +498,11 @@ Verified against the current code (no invented gaps):
 This jar advances in lockstep with the platform auth roadmap; the next increments are:
 - **Adopt the jar across BFFs**: with the extraction landed, complete admin-bff + user-bff
   adoption so login/session logic is fully relocated admin-bff → user-bff against this one
-  shared implementation.
+  shared implementation. In progress: user-bff already runs `POST /bff/login`, and admin-bff's
+  `AuthController` still mints sessions.
 - **SSO end-to-end + e2e**: support the live Casdoor OIDC (PKCE) → opaque `bff_` session
   flow and the gateway exchange-filter path, with end-to-end tests.
-- **MFA BFF wiring** *(done here; dark by default)*: the shared MFA store/verifier
+- **MFA BFF wiring** *(done here; enforcement off by default)*: the shared MFA store/verifier
   infrastructure (TOTP, WebAuthn, recovery codes, `FactorType`/`CeremonyType` enums,
   DB-generated PKs) and the `bff_`-session bridge are landed in this library, and the
   BFF-side step-up enforcement landed in admin-bff / mod-bff / forum-bff. What remains is
@@ -493,8 +512,7 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
   superadmin, device-license registry, desktop app governance (SSO sudo), and OWASP
   pen-test + nuclei in CI.
 
-_Grounded in the HugMesh current-state brief and the repo's landed code at
-auth-core 2.4.2 (2026-08-05, through the MFA ceremony-test / precondition-boot-guard /
-32-byte-challenge PRs #39/#40/#41), re-verified against a real `./mvnw -o -s settings.xml test`
-run on 2026-08-05 (450 tests, 0 failures). Features beyond the brief and the actual code are
-intentionally not invented here._
+_Checked on 2026-10-07 against `origin/main` of this repo at `2984fc8` (auth-core 2.5.1) and
+`origin/main` of hugmesh-admin-bff-api, hugmesh-user-bff-api, hugmesh-mod-bff-api, hugmesh-gateway,
+hugmesh-federation-api and hugmesh-generator. The build was run as stated under Build. Features
+beyond the landed code are intentionally not invented here._
