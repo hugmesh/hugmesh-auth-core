@@ -486,9 +486,9 @@ class ReleaseMetadataGuardTest {
     // Cross-repo package reads (added 2026-09-18, after adversarial review of the decision
     // 27 round). The prepared chain reads GitHub Packages published from OTHER repositories.
     // secrets.GITHUB_TOKEN is scoped to the repository whose workflow is running, and GitHub
-    // does not grant it cross-repository package access by default: the package must name
-    // this repository under "Manage Actions access", or the build must present a token
-    // carrying read:packages. Nothing in the first cut did either, and the resulting maven
+    // does not grant it cross-repository package access by default, so the build must present
+    // a token carrying read:packages (PACKAGES_READ_TOKEN; decision 90a = B; the per-package
+    // "Manage Actions access" grant is not the plan). The first cut did not, and the maven
     // error is "Could not resolve net.hugmesh:..." — the exact string RELEASING.md teaches a
     // reader to interpret as "the upstream is not published yet". These checks pin the fix.
     // ===================================================================================
@@ -702,11 +702,10 @@ class ReleaseMetadataGuardTest {
                     .contains("UPSTREAM_PACKAGES_ACTOR", "UPSTREAM_PACKAGES_TOKEN");
             assertThat(token)
                     .as("step '%s' wires UPSTREAM_PACKAGES_TOKEN to '%s'. It must offer the "
-                            + "operator's read:packages PAT FIRST and fall back to the automatic "
-                            + "token: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}. "
-                            + "Hardcoding secrets.GITHUB_TOKEN alone puts the chain back on the "
-                            + "per-package 'Manage Actions access' click with no way for an "
-                            + "operator to override it.", step.get("name"), token)
+                            + "operator's read:packages PAT and fall back to the automatic token: "
+                            + "${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}. "
+                            + "Hardcoding secrets.GITHUB_TOKEN alone leaves the cross-repo read "
+                            + "with no working credential and no operator override.", step.get("name"), token)
                     .contains("secrets.PACKAGES_READ_TOKEN")
                     .contains("secrets.GITHUB_TOKEN");
         }
@@ -717,7 +716,7 @@ class ReleaseMetadataGuardTest {
     }
 
     @Test
-    @DisplayName("the cross-repo read is preflighted, and both ways to authorise it are written down")
+    @DisplayName("the cross-repo read is preflighted, and the read route is documented")
     void crossRepoPackageReadIsPreflightedAndDocumented() throws Exception {
         List<Map<?, ?>> preflights = steps(parseWorkflow(RELEASE_WORKFLOW)).stream()
                 .filter(s -> String.valueOf(s.get("name")).toLowerCase(Locale.ROOT).startsWith("preflight"))
@@ -750,13 +749,13 @@ class ReleaseMetadataGuardTest {
 
         String releasing = read("RELEASING.md");
         assertThat(releasing)
-                .as("RELEASING.md must name the per-package 'Manage Actions access' grant. It is "
-                        + "a launch-day step that going public does NOT perform for you, and it "
-                        + "sits between 'make the repos public' and 'run one workflow'.")
+                .as("RELEASING.md must name the per-package 'Manage Actions access' grant as "
+                        + "*not the plan* (decision 90a = B). It is documented so a reader is told "
+                        + "that route is not chosen.")
                 .contains("Manage Actions access");
         assertThat(releasing)
-                .as("RELEASING.md must name PACKAGES_READ_TOKEN — the other of the two routes, "
-                        + "and the one the workflow reads.")
+                .as("RELEASING.md must name PACKAGES_READ_TOKEN — the read route, kept by "
+                        + "decision 90a = B.")
                 .contains("PACKAGES_READ_TOKEN");
     }
 }
