@@ -11,7 +11,8 @@ import java.util.Objects;
  * Security {@code Authentication}. Unknown response fields are ignored, so the endpoint can grow
  * without breaking a consumer pinned to an older jar.
  *
- * <p>{@code status} defaults to {@code "active"} when the response omits it; {@code roles}
+ * <p>{@code status} is NOT defaulted to {@code "active"}: a response that omits it carries a
+ * blank (unknown) status, which {@link BffSessionIntrospectionWebFilter} refuses. {@code roles}
  * defaults to empty and is copied defensively.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -27,6 +28,6 @@ public record BffSessionIntrospection(
         if (id == null) id = "";
         if (provider == null) provider = "";
         roles = roles == null ? List.of() : List.copyOf(roles.stream().filter(Objects::nonNull).toList());
-        if (status == null) status = "active";
+        if (status == null) status = "";
     }
 }

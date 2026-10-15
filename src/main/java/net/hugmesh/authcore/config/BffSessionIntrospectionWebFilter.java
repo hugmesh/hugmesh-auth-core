@@ -1,5 +1,6 @@
 package net.hugmesh.authcore.config;
 
+import net.hugmesh.authcore.account.AccountStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
@@ -42,9 +43,12 @@ import java.util.Locale;
  *       unauthenticated, so the service's own rules produce the 401.</li>
  *   <li>Account {@code suspended} or {@code banned}: {@code 403} with
  *       {@code X-Bff-Denied: account-<status>}; the chain is not invoked.</li>
+ *   <li>Status missing, blank or any value other than {@code active}/{@code suspended}/{@code banned}:
+ *       {@code 403} with {@code X-Bff-Denied: account-status-unrecognized} (allow-list: only an
+ *       explicit {@code active} is granted); the chain is not invoked.</li>
  *   <li>Introspector error or timeout: {@code 503} with {@code {"error":"session_backend_unavailable"}};
  *       the chain is not invoked (fail closed, never an anonymous or floor grant).</li>
- *   <li>Otherwise: the chain runs once with the mapped authentication in its security context.</li>
+ *   <li>Status {@code active}: the chain runs once with the mapped authentication in its security context.</li>
  * </ul>
  */
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -94,10 +98,18 @@ public class BffSessionIntrospectionWebFilter implements WebFilter {
 
     private static Decision decide(BffSessionIntrospection intro) {
         String status = intro.status();
-        if ("suspended".equalsIgnoreCase(status) || "banned".equalsIgnoreCase(status)) {
-            String lower = status.toLowerCase(Locale.ROOT);
-            log.warn("[bff-session-introspection] denied, account status={} id={}", lower, intro.id());
-            return new Decision(null, "account-" + lower, false);
+        // ALLOW-LIST: authorities are granted ONLY for an explicit "active". A missing, blank,
+        // padded or unrecognized status is refused with a constant reason (never the raw,
+        // backend-supplied text); suspended/banned keep their specific reason.
+        if (!AccountStatus.ACTIVE.equalsIgnoreCase(status)) {
+            if (AccountStatus.SUSPENDED.equalsIgnoreCase(status) || AccountStatus.BANNED.equalsIgnoreCase(status)) {
+                String lower = status.toLowerCase(Locale.ROOT);
+                log.warn("[bff-session-introspection] denied, account status={} id={}", lower, intro.id());
+                return new Decision(null, "account-" + lower, false);
+            }
+            log.warn("[bff-session-introspection] denied, unrecognized account status (blank={}) id={}",
+                    status == null || status.isBlank(), intro.id());
+            return new Decision(null, "account-status-unrecognized", false);
         }
         return new Decision(new UsernamePasswordAuthenticationToken(intro.id(), null,
                 BffCookieAuthenticationWebFilter.buildAuthorities(
