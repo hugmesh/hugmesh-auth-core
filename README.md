@@ -92,8 +92,9 @@ auth-core's own classes (`OidcExchangeClient`, `AccountStore`,
   (see **MFA precondition startup check** below).
 - ✅ `config/` — session-cookie + internal-token web filters, the internal-surface boot guard,
   and `BffCookieAuthenticationWebFilter` (bridges an opaque `bff_` session into a real Spring
-  Security `Authentication` for a consumer's own `hasAnyRole()`/`.authenticated()` gates —
-  today wired for admin-bff only, see Known Gaps).
+  Security `Authentication` for a consumer's own `hasAnyRole()`/`.authenticated()` gates,
+  resolving through a local `AccountStore`) and `BffSessionIntrospectionWebFilter` (the same
+  bridge for a service without that store, resolving over HTTP — see the next section).
 - ✅ `provision/` (gateway revocation client), `reserved/` (reserved-name gate),
   `username/` (federation username gate), `web/dto/` (login/register/MFA request DTOs).
 - All packages from the extraction blueprint have landed; admin-bff + user-bff adopt this jar.
@@ -271,7 +272,20 @@ used) is **BUILD SUCCESS** too — 450 tests green, `BugInstance size is 0` — 
   gates (previously only reachable by a real Casdoor JWT, since `oauth2ResourceServer().jwt()`
   is correctly inert to an opaque token) also see native-login sessions. Only works for a
   service with a LOCAL `AccountStore` bean (today: admin-bff only) — user-bff/mod-bff/
-  federation-api need a different, HTTP-based bridge (see Known Gaps).
+  federation-api use the HTTP-based bridge below instead.
+- **Shared HTTP `bff_` session bridge**: `BffSessionIntrospectionWebFilter` resolves the session
+  through a `BffSessionIntrospector`; `HttpBffSessionIntrospector` is the network implementation
+  (`GET /bff/internal/session/introspect` on admin-bff, the token as `Authorization: Bearer`;
+  the `WebClient` you pass in owns the base URL and the `X-Internal-Token`/mTLS credential).
+  It maps authorities with the same code as the local-store filter. It is NOT a `@Component`:
+  declare it as a `@Bean`, e.g.
+  `new BffSessionIntrospectionWebFilter(new HttpBffSessionIntrospector(webClient), Duration.ofSeconds(2))`,
+  and register it instead of (not alongside) `BffCookieAuthenticationWebFilter`. An unknown or
+  expired session passes through unauthenticated, a suspended/banned account gets `403` with
+  `X-Bff-Denied`, and an introspection error or timeout gets `503` (all pinned by
+  `BffSessionIntrospectionWebFilterTest` and `HttpBffSessionIntrospectorTest`). user-bff-api and
+  mod-bff-api each carry their own hand-rolled copy of this rule today; moving them onto this
+  class is a change in those repos, not here, and federation-api has no bridge yet.
 - **Gated outbound mTLS for the OIDC token exchange**: `OidcExchangeClientSsl` optionally
   routes `OidcExchangeClient`'s Casdoor token-endpoint calls (the PKCE code/refresh leg, which
   carries `client_secret` + tokens) through client-cert + cluster-CA mTLS, mirroring
@@ -393,13 +407,11 @@ Verified against the current code (no invented gaps):
   covered by end-to-end tests.
 - **`BffCookieAuthenticationWebFilter` only bridges services with a LOCAL `AccountStore`** —
   it resolves a `bff_` session by calling `AccountStore` directly against the DB, so it only
-  works where the service owns the accounts/bff_session tables itself (today: admin-bff).
-  user-bff, mod-bff, and federation-api have the identical gap on their own
-  `hasAnyRole()`/`.authenticated()` gates but don't have local DB access to those tables —
-  they need a different, HTTP-based bridge that resolves the session over the network
-  (mirroring the gateway's own `BffSessionAuthFilter`) instead of this class. Documented as
-  an intentional, tracked follow-up in the filter's own class-level Javadoc
-  (`config/BffCookieAuthenticationWebFilter.java`); not yet implemented anywhere.
+  works where the service owns the accounts/bff_session tables itself (today: admin-bff). A
+  service without that access uses `BffSessionIntrospectionWebFilter` (above). What is still
+  open is adoption, outside this jar: user-bff-api (`BffSessionAuthenticationWebFilter`) and
+  mod-bff-api (`BffCookieAuthenticationWebFilter` + `AdminBffSessionIntrospectClient`) carry
+  their own copies of the HTTP bridge, and hugmesh-federation-api has none.
 - **The Casdoor UUID `sub` is deliberately NOT carried by this module — resolved, not
   pending.** This list used to ask whether a consumer would ever need the raw Casdoor
   subject (`Account` is `{id, provider, handle, registrationComplete, roles}` and
