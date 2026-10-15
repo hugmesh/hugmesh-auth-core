@@ -74,6 +74,57 @@ stays open.
 - README: the MFA step-up path is described as wired-and-dark rather than "not yet complete"
   (`b04d0cb`), with `file:line` pointers.
 
+### Release plumbing — added 2026-09-17, no code change to the artifact
+Operator decision 27 (hugmesh-generator#347): *"B for the mechanism, A prepared"*. The
+source-build mechanism is untouched — `hugmesh-generator/tests/stack/m2-bootstrap.sh` still
+builds this library from a pinned SHA, and with no `-s` the effective repository list of this
+project is still `central` alone. What changed is that the **publish path is now real and
+unfired**:
+- `.github/maven-ci-settings.xml` — CI-only Maven settings declaring the three upstream
+  GitHub Packages repositories as both `<repositories>` and `<pluginRepositories>`, plus the
+  `github` deploy server. Deliberately NOT in `pom.xml`: `maven.pkg.github.com` answers 401
+  to an unauthenticated GET, so a pom entry would break every developer build and every cold
+  compose build. `RELEASING.md` §3.2.
+- `.github/workflows/release.yml` — both maven steps now pass `-s .github/maven-ci-settings.xml`.
+- `.github/workflows/release-chain.yml` — one `workflow_dispatch` that publishes all four
+  links in build order (`build-config` → `parent` → `commons` → `auth-core`), gated on a
+  literal `PUBLISH` confirmation and on a `RELEASE_CHAIN_TOKEN` secret that does not exist
+  yet. `RELEASING.md` §6.2 is the operator's click list.
+- `ReleaseMetadataGuardTest` grew from 4 checks to 12, all mutation-tested: production was
+  broken eight ways (flag dropped, packages URL moved into the pom, `<pluginRepositories>`
+  deleted, deploy `<server>` deleted, chain reordered, a tag trigger added, the settings file
+  deleted, the chain rewired to `GITHUB_TOKEN`) and the guard went red on all eight.
+
+**Corrected 2026-09-18, after adversarial review — two defects in the above.**
+- **The prepared chain could not have read its own upstreams.** Every upstream `<server>` in
+  the CI settings file authenticated with `${env.GITHUB_TOKEN}`, but `secrets.GITHUB_TOKEN`
+  is scoped to the repository whose workflow is running; GitHub does not extend it across
+  repositories for package reads. The first real run would have died on
+  `Could not resolve net.hugmesh:hugmesh-parent:pom:2.8.0` — *the same string these very
+  docs teach a reader to interpret as "the upstream is not published yet"*, so it was set up
+  to be misdiagnosed into a pointless re-publish. Fixed three ways: the upstream servers now
+  read `${env.UPSTREAM_PACKAGES_*}`, injected as
+  `${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}` so an operator can override;
+  `release.yml` gained a preflight step that probes each upstream registry with that exact
+  credential and reports `401`/`403` as an authorisation failure rather than as absence; and
+  `RELEASING.md` §6.1 blocker 4 / §6.2 step 2 record the two grant routes and that **going
+  public does not perform either of them**.
+- **The guard blocked ordinary pre-merge CI.** `everyWorkflowIsDispatchOnly` required *every*
+  file under `.github/workflows` to be `workflow_dispatch`-only, so a plain `ci.yml` running
+  `./mvnw test` on `pull_request` failed the build with *"Every workflow in this repo
+  publishes or can publish an immutable coordinate"* — false of a test-only workflow, and
+  this repo has no pre-merge CI yet. Replaced by `everyPublishingWorkflowIsDispatchOnly`,
+  which classifies a workflow as publishing on any of: a `deploy` in a parsed `run:`, a
+  `gh workflow run` dispatch, a `permissions:` block mentioning `packages`, or the raw text
+  naming `maven.pkg.github.com`. Exemption is deliberately hard to obtain, and the test also
+  asserts that `release.yml` and `release-chain.yml` are never exempted, so it cannot pass
+  vacuously.
+
+**Still not published, and it cannot be published today.** No Actions job in this org starts
+at all while the repos are private: the annotation on the most recent runs is *"The job was
+not started because recent account payments have failed or your spending limit needs to be
+increased."* `RELEASING.md` §6.1.
+
 ### Not in this release
 No schema change, no dependency change, no removal. `pom.xml`'s dependency set is
 byte-identical to 2.5.0's.
