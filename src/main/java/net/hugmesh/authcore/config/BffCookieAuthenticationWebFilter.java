@@ -18,6 +18,7 @@ import net.hugmesh.authcore.account.Account;
 import net.hugmesh.authcore.account.AccountStore;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -81,15 +82,11 @@ import java.util.Optional;
  * <h3>Scope — services with a LOCAL {@link AccountStore} only</h3>
  * This filter resolves a session by calling {@link AccountStore} DIRECTLY, which
  * only works for a service that owns the accounts/bff_session tables itself
- * (today: admin-bff-api). user-bff-api, mod-bff-api and federation-api have the
- * SAME gap on their own human-role gates ({@code /bff/user/**},
- * {@code /bff/mod/**}, {@code /api/federation/moderation/**} etc are all
- * JWT-only-gated too) but do NOT have local database access to the accounts
- * table (network-isolated from it by design) — they need a DIFFERENT filter that
- * resolves the session over HTTP against admin-bff's
- * {@code /bff/internal/session/introspect} endpoint, mirroring the gateway's own
- * {@code BffSessionAuthFilter} rather than this class. That is intentionally NOT
- * done here; it is a separate, tracked follow-up.
+ * (today: admin-bff-api). A service without local database access to those tables
+ * (network-isolated from them by design) uses {@link BffSessionIntrospectionWebFilter}
+ * instead, which resolves the session over HTTP against admin-bff's
+ * {@code /bff/internal/session/introspect} endpoint and shares this class's
+ * authority mapping.
  *
  * <h3>Tolerating a missing {@link AccountStore} — {@code ObjectProvider}, not
  * {@code @ConditionalOnBean}</h3>
@@ -177,15 +174,24 @@ public class BffCookieAuthenticationWebFilter implements WebFilter {
 
     /** Package-private (not private) so a unit test can exercise the mapping directly. */
     static List<GrantedAuthority> buildAuthorities(Account account, boolean mfaSatisfied) {
+        return buildAuthorities(account.registrationComplete(), account.roles(), mfaSatisfied);
+    }
+
+    /**
+     * The one authority mapping, shared with {@link BffSessionIntrospectionWebFilter} so the
+     * local-store filter and the HTTP-bridge filter can never disagree on what a session grants.
+     */
+    static List<GrantedAuthority> buildAuthorities(boolean registrationComplete, Collection<String> roles,
+                                                   boolean mfaSatisfied) {
         var authorities = new ArrayList<GrantedAuthority>();
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
 
-        if (!account.registrationComplete()) {
+        if (!registrationComplete) {
             return authorities;
         }
 
-        if (account.roles() != null) {
-            for (String role : account.roles()) {
+        if (roles != null) {
+            for (String role : roles) {
                 if (role != null && !role.isBlank()) {
                     String authority = "ROLE_" + role.trim().toUpperCase();
                     if (!"ROLE_USER".equals(authority)) {
