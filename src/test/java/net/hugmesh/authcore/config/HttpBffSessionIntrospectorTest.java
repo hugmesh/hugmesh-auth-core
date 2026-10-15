@@ -73,16 +73,27 @@ class HttpBffSessionIntrospectorTest {
     }
 
     @Test
-    void omittedStatusDefaultsToActive() {
+    void omittedStatusIsNotDefaultedToActive() {
         var http = over(HttpStatus.OK,
                 "{\"id\":\"x\",\"roles\":null,\"registrationComplete\":true,\"mfaSatisfied\":false}",
                 new AtomicReference<>());
 
         StepVerifier.create(http.introspect("bff_tok"))
                 .assertNext(i -> {
-                    assertThat(i.status()).isEqualTo("active");
+                    assertThat(i.status()).isNotEqualToIgnoringCase("active");
                     assertThat(i.roles()).isEmpty();
                 })
+                .verifyComplete();
+    }
+
+    @Test
+    void explicitlyNullStatusIsNotDefaultedToActive() {
+        var http = over(HttpStatus.OK,
+                "{\"id\":\"x\",\"status\":null,\"registrationComplete\":true,\"mfaSatisfied\":false}",
+                new AtomicReference<>());
+
+        StepVerifier.create(http.introspect("bff_tok"))
+                .assertNext(i -> assertThat(i.status()).isNotEqualToIgnoringCase("active"))
                 .verifyComplete();
     }
 }

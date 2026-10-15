@@ -137,6 +137,38 @@ class BffSessionIntrospectionWebFilterTest {
     }
 
     @Test
+    void unknownMissingOrMalformedStatus_is403WithConstantReason_andNeverReachesTheChain() {
+        // null = the introspect body omitted the field (the record no longer defaults it to active).
+        for (String status : java.util.Arrays.asList(null, "", "   ", "pending", "disabled", "locked",
+                " active", "active ", "active\n", "activ", "ac\u0074ive\u200b", "active\r\nX-Evil: 1")) {
+            var i = new CountingIntrospector(t -> Mono.just(intro(status, true, true, "admin")));
+            var chain = new CapturingChain();
+            var ex = exchangeWith("Bearer bff_abc");
+
+            filterOver(i).filter(ex, chain).block();
+
+            assertThat(ex.getResponse().getStatusCode()).as("status=%s", status).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(ex.getResponse().getHeaders().getFirst(BffSessionIntrospectionWebFilter.DENIED_HEADER))
+                    .as("status=%s", status).isEqualTo("account-status-unrecognized");
+            assertThat(ex.getResponse().getHeaders().containsKey("X-Evil")).isFalse();
+            assertThat(chain.forwarded.get()).as("status=%s", status).isZero();
+        }
+    }
+
+    @Test
+    void activeInAnyCase_stillAuthenticates() {
+        for (String status : List.of("active", "ACTIVE", "Active")) {
+            var i = new CountingIntrospector(t -> Mono.just(intro(status, true, false, "user")));
+            var chain = new CapturingChain();
+
+            filterOver(i).filter(exchangeWith("Bearer bff_abc"), chain).block();
+
+            assertThat(chain.forwarded.get()).as("status=%s", status).isEqualTo(1);
+            assertThat(chain.auth.get()).as("status=%s", status).isNotNull();
+        }
+    }
+
+    @Test
     void introspectorError_failsClosedWith503_andNeverReachesTheChain() {
         var i = new CountingIntrospector(t -> Mono.error(new IllegalStateException("admin-bff down")));
         var chain = new CapturingChain();
