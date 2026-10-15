@@ -388,9 +388,16 @@ Verified against the current code (no invented gaps):
   piece of *design*, per-role MFA defaults, lives in hugmesh-generator's route-access seed
   (its `mfa_required` predicate is keyed on `url_pattern`, never on `role`) — not in
   this jar.
-- **SSO end-to-end + e2e tests** — the live Casdoor OIDC (PKCE) → opaque `bff_` session
-  flow and the gateway exchange-filter path are called out in the Roadmap as not yet
-  covered by end-to-end tests.
+- **SSO flow tests cover the login → session → custody → logout path, not the filters
+  or the gateway** — `SsoFlowTest` drives `OidcExchangeClient` (over a real socket to a
+  stand-in token endpoint) → `AccountStore.ensureAccount` / `newSession` →
+  `BffCustodyCipher` → `stampCustody` → refresh restamp → logout on ONE path through the
+  real repositories (R2DBC-H2). It does not drive `BffCookieAuthenticationWebFilter` or
+  `SessionCookieWebFilter`, and nothing in this repo covers the gateway's exchange-filter
+  path (`/bff/session` introspection through the gateway's `BffSessionAuthFilter`) or the
+  browser leg; those need a live cluster (the generator's `KIND_PROFILE=sso` harness,
+  `make kind-e2e`). The browser "Casdoor OIDC (PKCE)" callback no longer exists: PKCE (S256)
+  now runs server-side in user-bff against Casdoor's internal `/api/login`.
 - **`BffCookieAuthenticationWebFilter` only bridges services with a LOCAL `AccountStore`** —
   it resolves a `bff_` session by calling `AccountStore` directly against the DB, so it only
   works where the service owns the accounts/bff_session tables itself (today: admin-bff).
@@ -481,8 +488,10 @@ This jar advances in lockstep with the platform auth roadmap; the next increment
 - **Adopt the jar across BFFs**: with the extraction landed, complete admin-bff + user-bff
   adoption so login/session logic is fully relocated admin-bff → user-bff against this one
   shared implementation.
-- **SSO end-to-end + e2e**: support the live Casdoor OIDC (PKCE) → opaque `bff_` session
-  flow and the gateway exchange-filter path, with end-to-end tests.
+- **SSO end-to-end + e2e** *(partly done)*: `SsoFlowTest` covers code exchange → account
+  sync → opaque `bff_` session → custody → refresh → logout in this jar. Not on that path: the
+  cookie/session web filters here (tested separately), and the gateway exchange-filter path (needs a live
+  cluster via the generator's kind harness).
 - **MFA BFF wiring** *(done here; dark by default)*: the shared MFA store/verifier
   infrastructure (TOTP, WebAuthn, recovery codes, `FactorType`/`CeremonyType` enums,
   DB-generated PKs) and the `bff_`-session bridge are landed in this library, and the
