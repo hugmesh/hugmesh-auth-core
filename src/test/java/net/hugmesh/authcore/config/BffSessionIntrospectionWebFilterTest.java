@@ -150,7 +150,7 @@ class BffSessionIntrospectionWebFilterTest {
             assertThat(ex.getResponse().getStatusCode()).as("status=%s", status).isEqualTo(HttpStatus.FORBIDDEN);
             assertThat(ex.getResponse().getHeaders().getFirst(BffSessionIntrospectionWebFilter.DENIED_HEADER))
                     .as("status=%s", status).isEqualTo("account-status-unrecognized");
-            assertThat(ex.getResponse().getHeaders().containsKey("X-Evil")).isFalse();
+            assertThat(ex.getResponse().getHeaders().getFirst("X-Evil")).isNull();
             assertThat(chain.forwarded.get()).as("status=%s", status).isZero();
         }
     }
