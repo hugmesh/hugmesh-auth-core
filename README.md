@@ -386,10 +386,17 @@ Verified against the current code:
   (`20-schema.sql`: the blanket `mfa_required` UPDATE selects rows by `allow` and `url_pattern`, not
   by role; only the row-scoped `/bff/superadmin/games-services/**` UPDATE names `ROLE_SUPERADMIN`).
   It is not in this jar.
-- **SSO end-to-end and e2e tests.** The live Casdoor OIDC (PKCE) → opaque `bff_` session flow and the
-  gateway exchange-filter path are not yet covered end to end (hugmesh-auth-core#4, open). The
-  generator's `tests/e2e/specs/27-native-login.spec.ts` covers the native `POST /bff/login` form and
-  the cookie it mints.
+- **SSO flow tests cover login → session → custody → logout, not the filters or the gateway.**
+  `SsoFlowTest` drives `OidcExchangeClient` (over a real socket to a stand-in token endpoint) →
+  `AccountStore.ensureAccount` / `newSession` → `BffCustodyCipher` → `stampCustody` → refresh restamp
+  → logout on one path through the real repositories (R2DBC-H2). It does not drive
+  `BffCookieAuthenticationWebFilter` or `SessionCookieWebFilter`; each has its own unit test. Nothing
+  in this repo covers the gateway's exchange-filter path (its `BffSessionAuthFilter` calling
+  `/bff/internal/session/introspect`) or the browser leg. Those need a live cluster: the generator's
+  `KIND_PROFILE=sso` harness, where `make kind-e2e` runs `tests/e2e/specs/27-native-login.spec.ts`
+  against the native `POST /bff/login` form and the cookie it mints. There is no browser OIDC callback
+  any more: PKCE (S256) runs server-side in user-bff against Casdoor's internal `/api/login`.
+  hugmesh-auth-core#4 stays open.
 - **`BffCookieAuthenticationWebFilter` bridges only services with a LOCAL `AccountStore`.** It resolves
   a `bff_` session by calling `AccountStore` against the DB, so it works only where the service owns
   the accounts/bff_session tables (today: admin-bff). A service without that access needs an
@@ -463,8 +470,9 @@ This jar advances in step with the platform auth roadmap. The next steps:
   login and session logic moves fully from admin-bff to user-bff, on this one shared implementation.
   In progress: user-bff already runs `POST /bff/login`, and admin-bff's `AuthController` still mints
   sessions.
-- **SSO end-to-end and e2e.** Support the live Casdoor OIDC (PKCE) → opaque `bff_` session flow and the
-  gateway exchange-filter path, with end-to-end tests.
+- **SSO end-to-end and e2e** *(partly done)*. `SsoFlowTest` covers code exchange → account sync →
+  opaque `bff_` session → custody → refresh → logout in this jar. Still open: the gateway
+  exchange-filter path, which needs a live cluster via the generator's kind harness (see Known Gaps).
 - **MFA BFF wiring** *(done here; enforcement off by default)*. The shared MFA store and verifier code
   (TOTP, WebAuthn, recovery codes, `FactorType`/`CeremonyType` enums, DB-generated PKs) and the
   `bff_`-session bridge have landed in this library. The BFF-side step-up enforcement landed in
