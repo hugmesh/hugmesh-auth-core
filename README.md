@@ -189,8 +189,8 @@ Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.8.0 and hugmesh-comm
 through Testcontainers, so a local run also needs Docker (or `-Dtest='!*PostgresTest'` to skip just
 those). `./mvnw -o clean verify` also runs PMD, Checkstyle and SpotBugs (see Current State and Known
 Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged with `main` at
-`0621f18`: `./mvnw -o -B -s settings.xml clean verify '-Dtest=!*PostgresTest'` (the four
-`*PostgresTest` classes skipped, no Docker started) is **BUILD SUCCESS** — 513 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle violations,
+`a8010e9`: `./mvnw -o -B -s settings.xml clean verify '-Dtest=!*PostgresTest'` (the four
+`*PostgresTest` classes skipped, no Docker started) is **BUILD SUCCESS** — 518 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle violations,
 `BugInstance size is 0`. The last run of the whole suite with Docker was 2026-08-20: `clean verify`,
 450 tests green. `clean verify` has been in genuine fail mode since the `hugmesh-parent` 2.8.0 bump
 (`failOnError`, not the no-op `failOnViolation` of the historical 2.7.0 config). The repo-local
@@ -484,8 +484,8 @@ This jar advances in step with the platform auth roadmap. The next steps:
   nuclei in CI.
 
 _Checked on 2026-10-07 against `origin/main` of this repo at `2984fc8` (auth-core 2.5.1), and the
-consumer pins, generator manifest references and build result re-checked on 2026-10-15 against this
-repo at `0621f18` and
+consumer pins and generator manifest references re-checked on 2026-10-15 against this repo at
+`0621f18`, the build result and the SSO-test entries re-checked the same day at `a8010e9`, and
 `origin/main` of hugmesh-admin-bff-api, hugmesh-user-bff-api, hugmesh-mod-bff-api, hugmesh-gateway,
 hugmesh-federation-api and hugmesh-generator. The build was run as stated under Build. Features
 beyond the landed code are intentionally not invented here._
