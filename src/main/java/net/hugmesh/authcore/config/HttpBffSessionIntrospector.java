@@ -4,6 +4,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
+import tools.jackson.core.StreamReadFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * {@link BffSessionIntrospector} over HTTP: {@code GET /bff/internal/session/introspect} on
@@ -19,6 +21,12 @@ public class HttpBffSessionIntrospector implements BffSessionIntrospector {
     /** Path of admin-bff's internal introspection endpoint. */
     public static final String INTROSPECT_PATH = "/bff/internal/session/introspect";
 
+    /** Decoder for the introspect body: rejects a duplicate key instead of letting the last one
+     *  win. */
+    private static final JsonMapper INTROSPECT_READER = JsonMapper.builder()
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+            .build();
+
     private final WebClient http;
 
     public HttpBffSessionIntrospector(WebClient http) {
@@ -31,7 +39,11 @@ public class HttpBffSessionIntrospector implements BffSessionIntrospector {
                 .uri(INTROSPECT_PATH)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + bffToken)
                 .retrieve()
-                .bodyToMono(BffSessionIntrospection.class)
+                .bodyToMono(String.class)
+                // Decoded with duplicate-key detection: by default Jackson keeps the LAST of two
+                // "status" keys, so {"status":"suspended","status":"active"} would read as
+                // active. Two values for one field fail closed as a decode error.
+                .map(body -> INTROSPECT_READER.readValue(body, BffSessionIntrospection.class))
                 .onErrorResume(WebClientResponseException.Unauthorized.class, e -> Mono.empty());
     }
 }

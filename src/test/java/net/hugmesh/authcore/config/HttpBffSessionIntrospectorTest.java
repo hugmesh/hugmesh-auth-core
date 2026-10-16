@@ -96,4 +96,20 @@ class HttpBffSessionIntrospectorTest {
                 .assertNext(i -> assertThat(i.status()).isNotEqualToIgnoringCase("active"))
                 .verifyComplete();
     }
+
+    /** Two values for one key are ambiguous: the decode fails (closed) instead of the last
+     *  value winning, whichever order they come in. */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "{\"id\":\"casdoor:u\",\"roles\":[\"admin\"],\"registrationComplete\":true,"
+                    + "\"status\":\"suspended\",\"status\":\"active\",\"mfaSatisfied\":true}",
+            "{\"id\":\"casdoor:u\",\"roles\":[\"admin\"],\"registrationComplete\":true,"
+                    + "\"status\":\"active\",\"status\":\"active\",\"mfaSatisfied\":true}",
+            "{\"id\":\"casdoor:u\",\"roles\":[\"user\"],\"roles\":[\"admin\"],"
+                    + "\"registrationComplete\":true,\"status\":\"active\",\"mfaSatisfied\":true}"})
+    void aDuplicateKeyIsAnError_notTheLastValue(String body) {
+        var http = over(HttpStatus.OK, body, new AtomicReference<>());
+
+        StepVerifier.create(http.introspect("bff_tok")).expectError().verify();
+    }
 }
