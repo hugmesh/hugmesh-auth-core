@@ -134,10 +134,10 @@ Making them fatal by default would turn a degradation into an outage.
   `APP_CASDOOR_MFA_ENABLED: "true"` (MFA is **armed** in-cluster) and sources `APP_MFA_FACTOR_KEY`
   from an External-Secrets `secretKeyRef`. That ref used to carry `optional: true` ("*so the pod
   still starts if the Secret is somehow absent*"). Generator #508 (`087130a4`) dropped it:
-  `deployment.yaml:651-655` has no `optional` now. A genuinely absent Secret therefore blocks pod
+  the `APP_MFA_FACTOR_KEY` ref has no `optional` now. A genuinely absent Secret therefore blocks pod
   start at the Kubernetes layer (`CreateContainerConfigError`) before this guard runs. The same
-  manifest sets a real `APP_MFA_WEBAUTHN_RP_ID` and `APP_MFA_WEBAUTHN_ORIGINS` (`admin.hugmesh.net`,
-  lines 170-173). The guard still matters for every OTHER shape: compose, bare-metal runs, a brand
+  manifest sets a real `APP_MFA_WEBAUTHN_RP_ID` and `APP_MFA_WEBAUTHN_ORIGINS`
+  (`admin.hugmesh.net`). The guard still matters for every OTHER shape: compose, bare-metal runs, a brand
   whose manifest lost the WebAuthn properties. Those are the degraded-but-running band.
 - The local compose stack (`tests/stack/compose.local.yaml`) runs MFA on with **neither** WebAuthn
   property set. Its `dev` profile is only the `ADMIN_BFF_PROFILES` default.
@@ -163,7 +163,7 @@ runs a **real** `AnnotationConfigApplicationContext.refresh()`, because whether 
 decided by `refresh()` completing, not by a method call.
 
 The class is **released in 2.4.2** (see Current State for why the version moved). A consumer picks
-it up by pinning 2.4.2 or later (admin-bff pins 2.5.0, user-bff 2.4.2). Only admin-bff scans
+it up by pinning 2.4.2 or later (admin-bff and user-bff both pin 2.5.1). Only admin-bff scans
 `net.hugmesh.authcore`, so only admin-bff runs it. The generator pins the `admin-bff-mfa`
 `secretKeyRef` with its `[mfa-factor-key]` manifest-integrity check
 (`tests/scripts/cluster_manifest_integrity.py`).
@@ -188,9 +188,9 @@ Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.8.0 and hugmesh-comm
 `~/.m2`). It runs the full test suite. A handful of MFA-repo data-slice tests need a real Postgres
 through Testcontainers, so a local run also needs Docker (or `-Dtest='!*PostgresTest'` to skip just
 those). `./mvnw -o clean verify` also runs PMD, Checkstyle and SpotBugs (see Current State and Known
-Gaps for their enforcement). Measured 2026-10-07 at `2984fc8`: `./mvnw -o -B clean verify
-'-Dtest=!*PostgresTest'` (the four `*PostgresTest` classes skipped, no Docker started) is **BUILD
-SUCCESS** — 513 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle violations,
+Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged with `main` at
+`0621f18`: `./mvnw -o -B -s settings.xml clean verify '-Dtest=!*PostgresTest'` (the four
+`*PostgresTest` classes skipped, no Docker started) is **BUILD SUCCESS** — 513 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle violations,
 `BugInstance size is 0`. The last run of the whole suite with Docker was 2026-08-20: `clean verify`,
 450 tests green. `clean verify` has been in genuine fail mode since the `hugmesh-parent` 2.8.0 bump
 (`failOnError`, not the no-op `failOnViolation` of the historical 2.7.0 config). The repo-local
@@ -205,8 +205,9 @@ SUCCESS** — 513 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle viol
 - Depends on `hugmesh-commons` **2.1.0** (stateless security and tenancy). A `2.7.0` commons was never
   published: #23 pinned `2.0.0`, and the rebrand (#36) moved the pin to `2.1.0`. **No cycle**:
   commons does not depend on this core.
-- **Consumers: `user-bff` and `admin-bff` only.** admin-bff pins 2.5.0 (`pom.xml:155`), user-bff 2.4.2
-  (`pom.xml:98`). 2.5.1 is unpublished and no consumer pins it. The gateway depends on commons, NOT on
+- **Consumers: `user-bff` and `admin-bff` only.** Both pin 2.5.1, the coordinate the org release
+  chain is set up to publish. [`RELEASING.md`](RELEASING.md) §3 and §6 record 2.5.1 as not yet
+  published. The gateway depends on commons, NOT on
   this jar, which keeps r2dbc/casdoor/mfa off the gateway classpath.
 - Reactive throughout: **Spring Data R2DBC** repositories and no raw `DatabaseClient`, matching the
   org data-access standard. Hand-written SQL sits in `@Query` static-final constants on the
@@ -214,8 +215,7 @@ SUCCESS** — 513 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle viol
   Crypto is the JDK's `AES/GCM/NoPadding` (`BffCustodyCipher`, `MfaSecretCipher`) and `HmacSHA256`
   (`RecoveryCodeService`). `pom.xml` declares BouncyCastle 1.84, but no class in `src/main` imports
   it. MFA uses **webauthn4j 0.31.7** (WebAuthn) and TOTP. webauthn4j 0.31 moved internally to Jackson 3
-  (`tools.jackson`). `WebAuthnService` uses the `CredentialRecord` API and reads JSON through
-  `com.fasterxml.jackson.databind`.
+  (`tools.jackson`). `WebAuthnService` uses the `CredentialRecord` API.
 - **Username gate presents a Casdoor ROLE_SERVICE bearer (2.5.1)**: `FederationUsernameClient` takes
   an optional `Supplier<Mono<String>>` service bearer (5-arg constructor; the 4-arg one remains).
   `FederationUsernameConfig` wires `casdoor/CasdoorServiceTokenClient` — a cached OAuth2
@@ -309,11 +309,11 @@ SUCCESS** — 513 tests, `Failures: 0, Errors: 0, Skipped: 0`, 0 Checkstyle viol
   route-namespace move (`spring.cloud.gateway.routes` → `spring.cloud.gateway.server.webflux.routes`)
   is a gateway/generator concern and does not touch this module.
 - **Release/CI.** Two GitHub Actions workflows exist, both `workflow_dispatch`-only:
-  `.github/workflows/release.yml` and `.github/workflows/release-chain.yml`. `gh run list` shows
-  **zero runs to date** (2026-10-07). The GitLab path (`.gitlab-ci.yml`) cannot run: no repo carries a
+  `.github/workflows/release.yml` and `.github/workflows/release-chain.yml`. The Actions runs API reports
+  **zero runs to date** (2026-10-15). The GitLab path (`.gitlab-ci.yml`) cannot run: no repo carries a
   GitLab remote and `gitlab.hugmesh.net` does not resolve (the mesh deploys that host itself, see
   `hugmesh-generator/specs/cluster/apps/03-gitlab.yaml`). `main` is the only long-lived branch; the
-  remote also holds short-lived `iss/*`, `fix/*` and `docs/*` branches. The measured release
+  remote also holds short-lived topic branches. The measured release
   procedure, what still blocks a publish, and the consumer chain are in
   [`RELEASING.md`](RELEASING.md). Per-version notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -362,7 +362,7 @@ Verified against the current code:
   (issue #7 decision, 2026-09-01). admin-bff, the only runtime consumer, binds the property as
   `${BROKER_GATEWAY_REVOCATION_ENABLED:false}` in its own `application.yml`, so this `@Value`
   fallback is never consulted there. Flipping it here would change nothing for admin-bff (pinned to
-  auth-core 2.5.0) and would silently turn on gateway HTTP calls for any future consumer that scans
+  auth-core 2.5.1) and would silently turn on gateway HTTP calls for any future consumer that scans
   `net.hugmesh.authcore` without binding the property. The real switch is the consumer's
   `BROKER_GATEWAY_REVOCATION_ENABLED` env var (tracked in hugmesh-admin-bff-api).
   `GatewayRevocationClientWireTest` covers both branches against a live stub gateway: disabled means
@@ -371,7 +371,7 @@ Verified against the current code:
 - **MFA step-up: this jar's half is done; the enforcement flag ships off.** Two flags are in play.
   `app.casdoor.mfa.enabled` (`APP_CASDOOR_MFA_ENABLED`, default `false`) arms this jar's challenge and
   enrollment endpoints; the generator sets it `true` on admin-bff in the reference cluster
-  (`deployment.yaml:636`). `app.mfa.enabled` (`APP_MFA_ENABLED`, default `false`) is the gateway's and
+  (`specs/cluster/manifests/admin-bff-api/deployment.yaml`). `app.mfa.enabled` (`APP_MFA_ENABLED`, default `false`) is the gateway's and
   the BFFs' enforcement switch, and the cluster ships it `false`. hugmesh-auth-core#2 (wire real MFA
   step-up verification end to end) is still open. Everything this jar owns is in place:
   `BffStoredMfaFactorVerifier` is the `@Component @Primary` `MfaFactorVerifier` (so
@@ -431,13 +431,14 @@ Verified against the current code:
   connector (`OidcExchangeClientSsl`), because the in-cluster federation-api is `https://` with
   `client-auth=need`. An enabled gate with no bearer boots but WARNs. A mint failure, an empty
   supplier, an empty 2xx body and a non-2xx all fail closed. The 4-arg constructor and the legacy
-  header stay, so the change is wire-compatible. **Still consumer-side**, tracked as
-  hugmesh-generator#376: admin-bff pins 2.5.0 and must adopt a published build carrying this; its
-  manifest sets neither `APP_CASDOOR_PLATFORM_*` nor `HUGMESH_MTLS_CLIENT_ENABLED`; and the Casdoor
-  application named by `client-id` must hold the `service` role or federation answers 403. No version
-  bump here: 2.5.1 is prepared but unpublished (hugmesh-generator#347 decided on 2026-09-16 to publish
-  it; the blockers are in `RELEASING.md` §6) and no consumer pins it.
-- **SpotBugs fails the build, and `./mvnw -o clean verify` is GREEN** (measured 2026-10-07, see
+  header stay, so the change is wire-compatible. **Still open consumer-side**, tracked as
+  hugmesh-generator#376. admin-bff now pins 2.5.1, which carries this, but `RELEASING.md` records 2.5.1
+  as not yet published (hugmesh-generator#347 decided on 2026-09-16 to publish it; the blockers are in `RELEASING.md` §6).
+  The generator's admin-bff manifest now sets `HUGMESH_MTLS_CLIENT_ENABLED` and the
+  `APP_CASDOOR_PLATFORM_*` credentials (as `optional: true` Secret refs) and leaves
+  `FEDERATION_USERNAME_GATE_ENABLED` unset, so the gate stays off. The Casdoor application named by
+  `client-id` must hold the `service` role or federation answers 403.
+- **SpotBugs fails the build, and `./mvnw -o clean verify` is GREEN** (measured 2026-10-15, see
   Build; earlier by the same command on 2026-08-20, against the `hugmesh-parent` 2.8.0 /
   `hugmesh-build-config` 0.5.0 this module resolves). The old claim that SpotBugs fail mode is a
   no-op is **stale**. `hugmesh-parent` 2.8.0 replaced the silently ignored `failOnViolation`
@@ -474,7 +475,9 @@ This jar advances in step with the platform auth roadmap. The next steps:
   superadmin, device-license registry, desktop app governance (SSO sudo), and OWASP pen-test plus
   nuclei in CI.
 
-_Checked on 2026-10-07 against `origin/main` of this repo at `2984fc8` (auth-core 2.5.1) and
+_Checked on 2026-10-07 against `origin/main` of this repo at `2984fc8` (auth-core 2.5.1), and the
+consumer pins, generator manifest references and build result re-checked on 2026-10-15 against this
+repo at `0621f18` and
 `origin/main` of hugmesh-admin-bff-api, hugmesh-user-bff-api, hugmesh-mod-bff-api, hugmesh-gateway,
 hugmesh-federation-api and hugmesh-generator. The build was run as stated under Build. Features
 beyond the landed code are intentionally not invented here._
