@@ -140,7 +140,9 @@ class BffSessionIntrospectionWebFilterTest {
     void unknownMissingOrMalformedStatus_is403WithConstantReason_andNeverReachesTheChain() {
         // null = the introspect body omitted the field (the record no longer defaults it to active).
         for (String status : java.util.Arrays.asList(null, "", "   ", "pending", "disabled", "locked",
-                " active", "active ", "active\n", "activ", "ac\u0074ive\u200b", "active\r\nX-Evil: 1")) {
+                " active", "active ", "active\n", "activ", "ac\u0074ive\u200b", "active\r\nX-Evil: 1",
+                // Non-ASCII lookalikes String.equalsIgnoreCase folds onto ASCII.
+                "act\u0130ve", "ACT\u0130VE", "\u017Fuspended")) {
             var i = new CountingIntrospector(t -> Mono.just(intro(status, true, true, "admin")));
             var chain = new CapturingChain();
             var ex = exchangeWith("Bearer bff_abc");

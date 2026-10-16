@@ -18,7 +18,6 @@ import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Locale;
 
 /**
  * The HTTP-resolved counterpart of {@link BffCookieAuthenticationWebFilter}, for services that do
@@ -101,9 +100,13 @@ public class BffSessionIntrospectionWebFilter implements WebFilter {
         // ALLOW-LIST: authorities are granted ONLY for an explicit "active". A missing, blank,
         // padded or unrecognized status is refused with a constant reason (never the raw,
         // backend-supplied text); suspended/banned keep their specific reason.
-        if (!AccountStatus.ACTIVE.equalsIgnoreCase(status)) {
-            if (AccountStatus.SUSPENDED.equalsIgnoreCase(status) || AccountStatus.BANNED.equalsIgnoreCase(status)) {
-                String lower = status.toLowerCase(Locale.ROOT);
+        // Comparison is ASCII-only: String.equalsIgnoreCase folds U+0130 (dotted capital I) to
+        // 'i' and U+017F (long s) to 's', so it would accept a non-ASCII lookalike of "active"
+        // and echo a lookalike of "suspended" into the denial header.
+        if (!asciiEqualsIgnoreCase(status, AccountStatus.ACTIVE)) {
+            boolean banned = asciiEqualsIgnoreCase(status, AccountStatus.BANNED);
+            if (banned || asciiEqualsIgnoreCase(status, AccountStatus.SUSPENDED)) {
+                String lower = banned ? AccountStatus.BANNED : AccountStatus.SUSPENDED;
                 log.warn("[bff-session-introspection] denied, account status={} id={}", lower, intro.id());
                 return new Decision(null, "account-" + lower, false);
             }
@@ -114,6 +117,24 @@ public class BffSessionIntrospectionWebFilter implements WebFilter {
         return new Decision(new UsernamePasswordAuthenticationToken(intro.id(), null,
                 BffCookieAuthenticationWebFilter.buildAuthorities(
                         intro.registrationComplete(), intro.roles(), intro.mfaSatisfied())), null, false);
+    }
+
+    /** True when {@code value} equals {@code expected} (lower-case ASCII) ignoring ASCII case
+     *  only. */
+    static boolean asciiEqualsIgnoreCase(String value, String expected) {
+        if (value == null || value.length() != expected.length()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c >= 'A' && c <= 'Z') {
+                c = (char) (c + ('a' - 'A'));
+            }
+            if (c != expected.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Mono<Void> apply(Decision d, ServerWebExchange exchange, WebFilterChain chain) {
