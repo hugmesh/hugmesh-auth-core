@@ -15,7 +15,7 @@
        parent, which is exactly how a half-applied coordinate move went unnoticed before. -->
   <groupId>net.hugmesh</groupId>
   <artifactId>hugmesh-auth-core</artifactId>
-  <version>2.5.1</version>
+  <version>2.6.0</version>
   <packaging>jar</packaging>
   <name>hugmesh-auth-core</name>
   <description>Shared HugMesh auth core (stateful): account/allowlist/bff-session store,
