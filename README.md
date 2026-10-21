@@ -106,9 +106,11 @@ diagram shows where auth-core's own classes (`OidcExchangeClient`, `BffCustodyCi
   factor, credential and challenge rows with their repositories, and `MfaPreconditionBootGuard` (see
   **MFA precondition startup check** below).
 - ✅ `config/` — the session-cookie and internal-token web filters, the internal-surface boot guard,
-  and `BffCookieAuthenticationWebFilter`. That filter turns an opaque `bff_` session into a real
-  Spring Security `Authentication` for a consumer's own `hasAnyRole()`/`.authenticated()` gates. It
-  is wired for admin-bff only today (see Known Gaps).
+  and the two `bff_` session bridges, `BffCookieAuthenticationWebFilter` and
+  `BffSessionIntrospectionWebFilter`. Both turn an opaque `bff_` session into a real Spring Security
+  `Authentication` for a consumer's own `hasAnyRole()`/`.authenticated()` gates. The first resolves
+  the session through a local `AccountStore` (admin-bff); the second resolves it over HTTP, for a
+  service without that store (see Current State). No consumer uses the HTTP one yet (see Known Gaps).
 - ✅ `provision/` (gateway revocation client), `reserved/` (reserved-name gate), `username/`
   (federation username gate), `web/dto/` (login, register and MFA request DTOs).
 - Every package from the extraction blueprint has landed. admin-bff and user-bff adopt this jar.
@@ -274,7 +276,21 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
   Security `Authentication`. A consumer's own `hasAnyRole()`/`.authenticated()` gates used to see only
   a real Casdoor JWT, because `oauth2ResourceServer().jwt()` is inert to an opaque token. Now they see
   native-login sessions too. It works only for a service with a LOCAL `AccountStore` bean (today:
-  admin-bff only). user-bff and mod-bff carry their own HTTP-based bridges (see Known Gaps).
+  admin-bff only). A service without one uses the shared HTTP bridge below.
+- **Shared HTTP `bff_` session bridge**: `BffSessionIntrospectionWebFilter` (`config/`) resolves the
+  session through a `BffSessionIntrospector`. `HttpBffSessionIntrospector` is the network
+  implementation: `GET /bff/internal/session/introspect` on admin-bff with the token as
+  `Authorization: Bearer`. The `WebClient` you pass in owns the base URL and the `X-Internal-Token`
+  or mTLS credential. Authorities come from the same mapping as the local-store filter. It is NOT a
+  `@Component`: declare it as a `@Bean`, e.g.
+  `new BffSessionIntrospectionWebFilter(new HttpBffSessionIntrospector(webClient), Duration.ofSeconds(2))`,
+  and register it instead of (not alongside) `BffCookieAuthenticationWebFilter`. Outcomes: an
+  unknown or expired session passes through unauthenticated; `suspended`/`banned` get `403` with
+  `X-Bff-Denied: account-<status>`; any other status, including a missing, blank, padded or
+  non-ASCII lookalike of `active`, gets `403` with `X-Bff-Denied: account-status-unrecognized`
+  (only an explicit `active` is granted); an introspection error, a timeout, or a response body
+  with a duplicate key gets `503`. Pinned by `BffSessionIntrospectionWebFilterTest` and
+  `HttpBffSessionIntrospectorTest`.
 - **Gated outbound mTLS for the OIDC token exchange**: `OidcExchangeClientSsl` can route
   `OidcExchangeClient`'s Casdoor token-endpoint calls (the PKCE code/refresh leg, which carries
   `client_secret` and tokens) through client-cert and cluster-CA mTLS. It mirrors user-bff's
@@ -399,12 +415,12 @@ Verified against the current code:
   hugmesh-auth-core#4 stays open.
 - **`BffCookieAuthenticationWebFilter` bridges only services with a LOCAL `AccountStore`.** It resolves
   a `bff_` session by calling `AccountStore` against the DB, so it works only where the service owns
-  the accounts/bff_session tables (today: admin-bff). A service without that access needs an
-  HTTP-based bridge, like the gateway's own `BffSessionAuthFilter`. Two have one, each in its own repo
-  and not shared through this jar: user-bff (`config/BffSessionAuthenticationWebFilter`, via
+  the accounts/bff_session tables (today: admin-bff). A service without that access uses the shared
+  HTTP bridge, `BffSessionIntrospectionWebFilter` (see Current State). What is still open is
+  adoption, outside this jar: user-bff (`config/BffSessionAuthenticationWebFilter`, via
   `AdminBffInternalClient`) and mod-bff (`auth/BffCookieAuthenticationWebFilter`, via
-  `AdminBffSessionIntrospectClient`). forum-bff-api and federation-api carry none. Tracked in
-  hugmesh-auth-core#3 (open).
+  `AdminBffSessionIntrospectClient`) still carry their own hand-rolled copies, and forum-bff-api and
+  federation-api carry none. Tracked in hugmesh-auth-core#3 (open).
 - **The Casdoor UUID `sub` is deliberately NOT carried by this module. Resolved, not pending.** This
   list used to ask whether a consumer would ever need the raw Casdoor subject (`Account` is `{id,
   provider, handle, registrationComplete, roles}`, and `BffSession` has no subject column, so only
