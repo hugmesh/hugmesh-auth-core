@@ -207,9 +207,9 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
 - Depends on `hugmesh-commons` **2.1.0** (stateless security and tenancy). A `2.7.0` commons was never
   published: #23 pinned `2.0.0`, and the rebrand (#36) moved the pin to `2.1.0`. **No cycle**:
   commons does not depend on this core.
-- **Consumers: `user-bff` and `admin-bff` only.** Both pin 2.5.1, the coordinate the org release
-  chain is set up to publish. [`RELEASING.md`](RELEASING.md) §3 and §6 record 2.5.1 as not yet
-  published. The gateway depends on commons, NOT on
+- **Consumers: `user-bff` and `admin-bff` only.** Both pin 2.5.1. This repo's `main` now builds
+  2.6.0 (see [`CHANGELOG.md`](CHANGELOG.md)); [`RELEASING.md`](RELEASING.md) §3 and §6 record 2.5.1
+  as not yet published, and 2.6.0 is not published either. The gateway depends on commons, NOT on
   this jar, which keeps r2dbc/casdoor/mfa off the gateway classpath.
 - Reactive throughout: **Spring Data R2DBC** repositories and no raw `DatabaseClient`, matching the
   org data-access standard. Hand-written SQL sits in `@Query` static-final constants on the
