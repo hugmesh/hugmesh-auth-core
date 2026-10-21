@@ -10,6 +10,37 @@ before (2.5.1 landed in `pom.xml` at `fe2bf3a` and in the README only at `dba8a8
 
 ---
 
+## 2.6.0 — PREPARED, NOT PUBLISHED (prepared 2026-10-21, hugmesh-auth-core#21)
+
+A minor bump because the change below is consumer-visible (new public API), per
+`RELEASING.md` §1. Release content is the `main` commit that merges hugmesh-auth-core#21.
+Like 2.5.1, it has not been published: nothing in `RELEASING.md` §3 changed.
+
+### Added
+- **Shared HTTP `bff_` session bridge** in `config/`, for services that have no local
+  `AccountStore` (they cannot reach the accounts / `bff_session` tables):
+  `BffSessionIntrospectionWebFilter` (the `WebFilter`), `BffSessionIntrospector` (the lookup
+  interface), `HttpBffSessionIntrospector` (calls admin-bff's
+  `GET /bff/internal/session/introspect` with the token as `Authorization: Bearer`) and
+  `BffSessionIntrospection` (the response record). Only an explicit ASCII `active` status
+  gets authorities; `suspended`/`banned` and any unrecognized status get `403` with an
+  `X-Bff-Denied` reason; an introspection error, a timeout or a duplicate key in the
+  response body gets `503`. It is not a `@Component`: a consumer declares it as a `@Bean`.
+- **Shared authority mapping**: `BffCookieAuthenticationWebFilter.buildAuthorities` gains a
+  package-private overload taking `(registrationComplete, roles, mfaSatisfied)`, which both
+  the local-store filter and the HTTP bridge call, so the two can never grant different
+  roles for the same session. The existing `(Account, boolean)` form delegates to it.
+
+### Not changed
+- **No consumer uses the HTTP bridge yet.** user-bff-api, mod-bff-api and federation-api
+  still have to adopt it, and admin-bff's five `/bff/register|me|provision` routes are
+  untouched. hugmesh-auth-core#3 stays open for that cross-repo work.
+- The local-store `BffCookieAuthenticationWebFilter` behaves exactly as in 2.5.1: same
+  authorities for the same account. Nothing was removed or renamed, so `2.5.1 → 2.6.0` is
+  source- and binary-compatible. No consumer pin moves in this change.
+
+---
+
 ## 2.5.1 — PREPARED, NOT PUBLISHED (prepared 2026-09-16)
 
 Release content is `main` @ `dbdcee7` (`Merge pull request #17`). "Not published" is

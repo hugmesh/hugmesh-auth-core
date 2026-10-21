@@ -199,7 +199,7 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
 `spotbugs/exclude-filter.xml` triaged the 8 `EI_EXPOSE_REP2` findings (see Known Gaps).
 
 ## Current State
-- **Version 2.5.1** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
+- **Version 2.6.0** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
   Java 25 LTS** (eclipse-temurin:25), inherited from `hugmesh-parent` (metapom) **2.8.0**. The parent
   runs **PMD + Checkstyle + SpotBugs** during `verify` and pins **testcontainers 2.0.5**. All three
   analysers fail the build (SpotBugs through `failOnError` since the 2.8.0 bump). See Known Gaps for
@@ -277,7 +277,7 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
   a real Casdoor JWT, because `oauth2ResourceServer().jwt()` is inert to an opaque token. Now they see
   native-login sessions too. It works only for a service with a LOCAL `AccountStore` bean (today:
   admin-bff only). A service without one uses the shared HTTP bridge below.
-- **Shared HTTP `bff_` session bridge**: `BffSessionIntrospectionWebFilter` (`config/`) resolves the
+- **Shared HTTP `bff_` session bridge (2.6.0)**: `BffSessionIntrospectionWebFilter` (`config/`) resolves the
   session through a `BffSessionIntrospector`. `HttpBffSessionIntrospector` is the network
   implementation: `GET /bff/internal/session/introspect` on admin-bff with the token as
   `Authorization: Bearer`. The `WebClient` you pass in owns the base URL and the `X-Internal-Token`
