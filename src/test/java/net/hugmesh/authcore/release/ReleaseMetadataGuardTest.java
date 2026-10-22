@@ -47,11 +47,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       outside GitLab CI. A deploy step without an explicit override therefore aims a
  *       {@code gitlab-maven} server id at a non-URL while the runner holds credentials for
  *       the {@code github} id only. See RELEASING.md §3.1.</li>
- *   <li><b>The release workflow never fires on its own.</b> Publish-on-every-merge is what
- *       made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin (the GitLab
- *       {@code deploy:maven} job re-deploys at whatever version the pom holds). The GitHub
- *       workflow stays {@code workflow_dispatch}-only; adding a push/tag trigger has to be a
- *       deliberate edit that also updates this guard.</li>
+ *   <li><b>The release workflow never publishes on a merge.</b> Publish-on-every-merge is
+ *       what made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin (the GitLab
+ *       {@code deploy:maven} job re-deploys at whatever version the pom holds). Since the beta
+ *       scheme (2026-10-21) the workflow fires on {@code workflow_dispatch} and on a push of a
+ *       {@code v*} TAG only, never on a branch push; the deploy runs only when the version
+ *       guard has matched the tag to {@code pom.xml}. Any other trigger has to be a deliberate
+ *       edit that also updates this guard.</li>
+ *   <li><b>Publish jobs never reach the self-hosted runner from a pull request.</b> Every
+ *       job's {@code runs-on} is either a literal hosted label or the one guarded
+ *       {@code RUNS_ON_PUBLISH} expression, and nothing reads the old {@code RUNS_ON}
+ *       variable.</li>
  * </ol>
  *
  * <p><b>Why this parses the workflow instead of grepping it.</b> The first cut of this class
@@ -75,20 +81,51 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ReleaseMetadataGuardTest {
 
-    /** Newest CHANGELOG entry: a level-2 heading whose first token is a semver triple. */
-    private static final Pattern CHANGELOG_VERSION =
-            Pattern.compile("(?m)^##\\s+(\\d+\\.\\d+\\.\\d+)\\b");
+    /**
+     * A version as written in the docs: a semver triple, optionally with a pre-release part
+     * ({@code 2.6.0-beta.1}). The pre-release part is captured WITH the triple, so a heading
+     * for {@code 2.6.0-beta.1} can never be read back as {@code 2.6.0}.
+     */
+    private static final String DOC_VERSION = "(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?)";
 
-    /** The README's single self-declared version, e.g. {@code - **Version 2.5.1** on the ...}. */
+    /** Newest CHANGELOG entry: a level-2 heading whose first token is a version. */
+    private static final Pattern CHANGELOG_VERSION =
+            Pattern.compile("(?m)^##\\s+" + DOC_VERSION + "(?=\\s|$)");
+
+    /** The README's single self-declared version, e.g. {@code - **Version 2.6.0-beta.1** on the ...}. */
     private static final Pattern README_VERSION =
-            Pattern.compile("\\*\\*Version\\s+(\\d+\\.\\d+\\.\\d+)\\*\\*");
+            Pattern.compile("\\*\\*Version\\s+" + DOC_VERSION + "\\*\\*");
+
+    /**
+     * The only shape a published version may take: {@code MAJOR.MINOR.PATCH} or
+     * {@code MAJOR.MINOR.PATCH-beta.N} (beta scheme, 2026-10-21). No SNAPSHOT, no build
+     * metadata, no other pre-release label.
+     */
+    private static final Pattern PUBLISHABLE_VERSION =
+            Pattern.compile("\\d+\\.\\d+\\.\\d+(?:-beta\\.[1-9]\\d*)?");
 
     /** The one deploy coordinate that overrides the inherited GitLab distributionManagement. */
     private static final String EXPECTED_DEPLOY_OVERRIDE =
             "-DaltDeploymentRepository=github::default::https://maven.pkg.github.com/";
 
-    /** The only trigger this workflow may carry. Anything else publishes without a human. */
-    private static final Set<String> ONLY_ALLOWED_TRIGGER = Set.of("workflow_dispatch");
+    /**
+     * The only triggers a publishing workflow may carry: a human dispatch, and a push that
+     * is restricted to {@code v*} TAGS (see {@link #assertPushIsTagOnly}). Anything else
+     * publishes without a human decision.
+     */
+    private static final Set<String> ONLY_ALLOWED_TRIGGER = Set.of("workflow_dispatch", "push");
+
+    /** The triggers release.yml must carry exactly: dispatch (re-run path) and the tag push. */
+    private static final Set<String> RELEASE_TRIGGERS = Set.of("workflow_dispatch", "push");
+
+    /**
+     * The one runner expression a publish job may use (SCHEME.md 3.1): the self-hosted runner
+     * from RUNS_ON_PUBLISH only for a non-PR event on main or a version tag, hosted otherwise.
+     */
+    static final String PUBLISH_RUNS_ON = "${{ fromJSON(github.event_name != 'pull_request' "
+            + "&& github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' "
+            + "|| startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) "
+            + "&& vars.RUNS_ON_PUBLISH || '\"ubuntu-latest\"') }}";
 
     private static final String RELEASE_WORKFLOW = ".github/workflows/release.yml";
 
@@ -258,21 +295,76 @@ class ReleaseMetadataGuardTest {
         }
     }
 
+    /** The raw value of one trigger ({@code on.<name>}), or {@code null} when absent or bare. */
+    private static Object triggerValue(Map<?, ?> workflow, String name) {
+        Object on = workflow.containsKey(Boolean.TRUE) ? workflow.get(Boolean.TRUE) : workflow.get("on");
+        if (on instanceof Map<?, ?> m) {
+            return m.get(name);
+        }
+        if (on instanceof Iterable<?> it) {
+            for (Object e : it) {
+                if (e instanceof Map<?, ?> em && em.containsKey(name)) {
+                    return em.get(name);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * A {@code push} trigger on a publishing workflow must be restricted to {@code v*} tags:
+     * a mapping whose ONLY key is {@code tags}, every pattern starting with {@code v}. A bare
+     * {@code push} (no filter), any {@code branches}/{@code branches-ignore}, a
+     * {@code tags-ignore} or a {@code paths} filter all let a branch push publish.
+     */
+    private static void assertPushIsTagOnly(String relative, Map<?, ?> workflow) {
+        if (!triggerNames(workflow).contains("push")) {
+            return;
+        }
+        Object push = triggerValue(workflow, "push");
+        assertThat(push)
+                .as("%s: `push` is unfiltered (value %s), so EVERY branch push publishes "
+                        + "whatever pom.xml holds. Restrict it to `tags: ['v*']`.", relative, push)
+                .isInstanceOf(Map.class);
+        Map<?, ?> pushMap = (Map<?, ?>) push;
+        assertThat(pushMap.keySet().stream().map(String::valueOf).toList())
+                .as("%s: `push` may carry ONLY a `tags` filter; it declares %s. A `branches`, "
+                        + "`branches-ignore`, `tags-ignore` or `paths` key makes a branch push "
+                        + "(a merge to main) publish an immutable coordinate.", relative, pushMap.keySet())
+                .containsExactly("tags");
+        Object tags = pushMap.get("tags");
+        List<String> patterns = new ArrayList<>();
+        if (tags instanceof Iterable<?> it) {
+            it.forEach(t -> patterns.add(String.valueOf(t)));
+        } else {
+            patterns.add(String.valueOf(tags));
+        }
+        assertThat(patterns)
+                .as("%s: push.tags must list at least one pattern", relative)
+                .isNotEmpty()
+                .allSatisfy(t -> assertThat(t)
+                        .as("%s: push.tags pattern '%s' must start with 'v' (version tags only; "
+                                + "'*' or '**' would publish on any tag)", relative, t)
+                        .startsWith("v"));
+    }
+
     @Test
-    @DisplayName("the release workflow is workflow_dispatch-only — it never publishes on its own")
-    void releaseWorkflowNeverFiresOnPushOrTag() throws Exception {
-        Set<String> triggers = triggerNames(releaseWorkflow());
-        // An ALLOWLIST, not a blacklist of push spellings: any trigger other than
-        // workflow_dispatch — push, pull_request, release, schedule, workflow_run,
-        // repository_dispatch — publishes whatever version pom.xml happens to hold at the
-        // time, over an already-published coordinate.
+    @DisplayName("the release workflow fires only on a dispatch or a v* tag push — never on a merge")
+    void releaseWorkflowNeverFiresOnABranchPush() throws Exception {
+        Map<?, ?> workflow = releaseWorkflow();
+        Set<String> triggers = triggerNames(workflow);
+        // An ALLOWLIST, not a blacklist of push spellings: any trigger other than these two —
+        // pull_request, release, schedule, workflow_run, repository_dispatch — publishes
+        // whatever version pom.xml happens to hold at the time, over an already-published
+        // coordinate.
         assertThat(triggers)
-                .as("release.yml must stay workflow_dispatch-only; it declares %s. "
-                        + "Publish-on-merge is exactly what made 2.4.1 a mutable coordinate and "
-                        + "forced the 2.4.2 re-pin. If a new trigger is deliberate, widen "
-                        + "ONLY_ALLOWED_TRIGGER in the same change and say why in RELEASING.md.",
+                .as("release.yml must fire on exactly workflow_dispatch and a tag push; it declares "
+                        + "%s. Publish-on-merge is exactly what made 2.4.1 a mutable coordinate and "
+                        + "forced the 2.4.2 re-pin. If a new trigger is deliberate, change "
+                        + "RELEASE_TRIGGERS in the same change and say why in RELEASING.md.",
                         triggers)
-                .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
+                .containsExactlyInAnyOrderElementsOf(RELEASE_TRIGGERS);
+        assertPushIsTagOnly(RELEASE_WORKFLOW, workflow);
     }
 
     // ===================================================================================
@@ -612,8 +704,8 @@ class ReleaseMetadataGuardTest {
     }
 
     @Test
-    @DisplayName("every workflow that CAN publish is dispatch-only — and release.yml is always classified as one")
-    void everyPublishingWorkflowIsDispatchOnly() throws Exception {
+    @DisplayName("every workflow that CAN publish fires only on dispatch or a v* tag — and release.yml is always classified as one")
+    void everyPublishingWorkflowIsDispatchOrTagOnly() throws Exception {
         List<String> publishing = new ArrayList<>();
         List<String> exempt = new ArrayList<>();
         for (Path file : workflowFiles()) {
@@ -623,18 +715,22 @@ class ReleaseMetadataGuardTest {
                 continue;
             }
             publishing.add(relative);
-            Set<String> triggers = triggerNames(parseWorkflow(relative));
+            Map<?, ?> workflow = parseWorkflow(relative);
+            Set<String> triggers = triggerNames(workflow);
             assertThat(triggers)
                     .as("%s can publish an immutable coordinate and declares triggers %s. "
-                            + "Any trigger other than workflow_dispatch — push, pull_request, "
-                            + "release, schedule, workflow_run, repository_dispatch — republishes "
-                            + "whatever version pom.xml happens to hold over a coordinate that is "
-                            + "already out there. If a new trigger is deliberate, widen "
-                            + "ONLY_ALLOWED_TRIGGER in the same change and say why in RELEASING.md. "
-                            + "(Workflows this run treated as NON-publishing, and therefore free to "
-                            + "carry any trigger: %s — see canPublish().)",
+                            + "Only workflow_dispatch and a v*-tag-only push are allowed; any other "
+                            + "trigger — pull_request, release, schedule, workflow_run, "
+                            + "repository_dispatch — republishes whatever version pom.xml happens "
+                            + "to hold over a coordinate that is already out there. If a new "
+                            + "trigger is deliberate, widen ONLY_ALLOWED_TRIGGER in the same change "
+                            + "and say why in RELEASING.md. (Workflows this run treated as "
+                            + "NON-publishing, and therefore free to carry any trigger: %s — see "
+                            + "canPublish().)",
                             relative, triggers, exempt)
-                    .containsExactlyInAnyOrderElementsOf(ONLY_ALLOWED_TRIGGER);
+                    .contains("workflow_dispatch")
+                    .isSubsetOf(ONLY_ALLOWED_TRIGGER);
+            assertPushIsTagOnly(relative, workflow);
         }
         assertThat(publishing)
                 .as("canPublish() exempted the release workflow itself, so this guard just passed "
@@ -757,5 +853,283 @@ class ReleaseMetadataGuardTest {
                 .as("RELEASING.md must name PACKAGES_READ_TOKEN — the read route, kept by "
                         + "decision 90a = B.")
                 .contains("PACKAGES_READ_TOKEN");
+    }
+
+    // ===================================================================================
+    // Beta scheme (2026-10-21): the tag is the publish decision, the version guard matches it
+    // to pom.xml, a published version is never overwritten, a beta is a prerelease GitHub
+    // Release that is never "latest", and publish jobs reach the self-hosted runner only for
+    // a non-PR event on main or a version tag.
+    // ===================================================================================
+
+    /** {@code jobs:} of a parsed workflow, by job id. */
+    private static Map<String, Map<?, ?>> jobs(Map<?, ?> workflow) {
+        Map<String, Map<?, ?>> out = new java.util.LinkedHashMap<>();
+        if (workflow.get("jobs") instanceof Map<?, ?> js) {
+            js.forEach((k, v) -> {
+                if (v instanceof Map<?, ?> m) {
+                    out.put(String.valueOf(k), m);
+                }
+            });
+        }
+        assertThat(out).as("workflow declares no jobs").isNotEmpty();
+        return out;
+    }
+
+    private static List<Map<?, ?>> jobSteps(Map<?, ?> job) {
+        List<Map<?, ?>> out = new ArrayList<>();
+        if (job.get("steps") instanceof Iterable<?> list) {
+            for (Object step : list) {
+                if (step instanceof Map<?, ?> m) {
+                    out.add(m);
+                }
+            }
+        }
+        return out;
+    }
+
+    private static List<String> needs(Map<?, ?> job) {
+        Object n = job.get("needs");
+        List<String> out = new ArrayList<>();
+        if (n instanceof Iterable<?> it) {
+            it.forEach(e -> out.add(String.valueOf(e)));
+        } else if (n != null) {
+            out.add(String.valueOf(n));
+        }
+        return out;
+    }
+
+    private static final String RELEASE_KIND_CONDITION = "needs.version.outputs.kind == 'release'";
+
+    @Test
+    @DisplayName("the deploy runs only after the version guard matched a v* tag to pom.xml, and never over a published version")
+    void deployRunsOnlyForAGuardedVersionTag() throws Exception {
+        Map<String, Map<?, ?>> jobs = jobs(releaseWorkflow());
+        assertThat(jobs)
+                .as("%s must have a `version` job: it is the guard that decides whether this run "
+                        + "may publish at all", RELEASE_WORKFLOW)
+                .containsKey("version");
+
+        String guard = String.join("\n", jobSteps(jobs.get("version")).stream()
+                .map(st -> String.valueOf(st.get("run"))).toList());
+        assertThat(guard)
+                .as("the version guard must read pom.xml, refuse a -SNAPSHOT, compare the tag "
+                        + "(minus its leading v) with the pom version, and allow main only as a "
+                        + "non-publishing run. Script: %s", guard)
+                .contains("pom.xml")
+                .contains("-SNAPSHOT")
+                .contains("#v}")
+                .contains("refs/heads/main")
+                .contains("kind=release")
+                .contains("kind=main");
+
+        int deploys = 0;
+        for (Map.Entry<String, Map<?, ?>> job : jobs.entrySet()) {
+            List<Map<?, ?>> steps = jobSteps(job.getValue());
+            int refuseAt = -1;
+            for (int i = 0; i < steps.size(); i++) {
+                Map<?, ?> step = steps.get(i);
+                String name = String.valueOf(step.get("name"));
+                if (name.toLowerCase(Locale.ROOT).contains("already published")) {
+                    refuseAt = i;
+                    assertThat(String.valueOf(step.get("if")))
+                            .as("step '%s' must run on release runs", name)
+                            .contains(RELEASE_KIND_CONDITION);
+                    assertThat(String.valueOf(step.get("run")))
+                            .as("step '%s' must STOP (exit 1) when the version answers 200", name)
+                            .contains("200)")
+                            .contains("exit 1");
+                }
+                if (!(step.get("run") instanceof String run) || !run.matches("(?s).*\\bdeploy\\b.*")) {
+                    continue;
+                }
+                deploys++;
+                assertThat(String.valueOf(step.get("if")))
+                        .as("deploy step '%s' in job '%s' must run only when the version guard "
+                                + "classified the run as a release (a matched v* tag): `if: %s`. "
+                                + "Without it a dispatch on main republishes pom.xml's version.",
+                                name, job.getKey(), RELEASE_KIND_CONDITION)
+                        .contains(RELEASE_KIND_CONDITION);
+                assertThat(needs(job.getValue()))
+                        .as("job '%s' deploys, so it must `needs: version`", job.getKey())
+                        .contains("version");
+                assertThat(refuseAt)
+                        .as("job '%s' deploys without first refusing an already-published version "
+                                + "(a step whose name says 'already published', before the deploy). "
+                                + "A published coordinate is immutable.", job.getKey())
+                        .isBetween(0, i - 1);
+            }
+        }
+        assertThat(deploys).as("%s runs no deploy step — this guard passed vacuously", RELEASE_WORKFLOW)
+                .isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("a beta becomes a prerelease GitHub Release that is never 'latest', created only by a release run")
+    void githubReleaseIsAPrereleaseAndNeverLatestForABeta() throws Exception {
+        Map<?, ?> workflow = releaseWorkflow();
+        assertThat(String.valueOf(workflow.get("permissions")))
+                .as("top-level permissions must stay read-only; only the release job may write contents")
+                .doesNotContain("write");
+
+        int creates = 0;
+        for (Map.Entry<String, Map<?, ?>> job : jobs(workflow).entrySet()) {
+            for (Map<?, ?> step : jobSteps(job.getValue())) {
+                if (!(step.get("run") instanceof String run) || !run.contains("gh release create")) {
+                    continue;
+                }
+                creates++;
+                assertThat(String.valueOf(job.getValue().get("if")))
+                        .as("job '%s' creates a GitHub Release, so it must run only on a release run",
+                                job.getKey())
+                        .contains(RELEASE_KIND_CONDITION);
+                assertThat(needs(job.getValue()))
+                        .as("job '%s' must wait for the publish job: a Release must never exist for "
+                                + "a version that failed to deploy", job.getKey())
+                        .contains("publish");
+                assertThat(run)
+                        .as("the beta release command must pass --verify-tag, --prerelease and "
+                                + "--latest=false: a beta is never the repository's latest release. %s", run)
+                        .contains("--verify-tag")
+                        .contains("--prerelease --latest=false")
+                        .contains("PRERELEASE");
+            }
+        }
+        assertThat(creates).as("%s never creates a GitHub Release", RELEASE_WORKFLOW).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("publish jobs reach the self-hosted runner only through the guarded RUNS_ON_PUBLISH expression")
+    void publishJobsNeverReachTheSelfHostedRunnerFromAPullRequest() throws Exception {
+        for (Path file : workflowFiles()) {
+            String relative = repoRoot().relativize(file).toString().replace('\\', '/');
+            String raw = read(relative);
+            assertThat(raw)
+                    .as("%s reads the old `vars.RUNS_ON` variable. It is set to the self-hosted "
+                            + "runner on most repos and is not limited to main or tags, so a pull "
+                            + "request — from a fork, once the repo is public — would run on this "
+                            + "host. Use the RUNS_ON_PUBLISH expression (SCHEME.md 3.1).", relative)
+                    .doesNotContainPattern("vars\\.RUNS_ON(?!_PUBLISH)");
+
+            Map<?, ?> workflow = parseWorkflow(relative);
+            Set<String> triggers = triggerNames(workflow);
+            boolean prReachable = triggers.contains("pull_request") || triggers.contains("pull_request_target");
+            for (Map.Entry<String, Map<?, ?>> job : jobs(workflow).entrySet()) {
+                Object runsOn = job.getValue().get("runs-on");
+                assertThat(runsOn)
+                        .as("%s job '%s': runs-on must be a single string (a literal hosted label or "
+                                + "the guarded expression), not %s", relative, job.getKey(), runsOn)
+                        .isInstanceOf(String.class);
+                String r = (String) runsOn;
+                boolean literalHosted = !r.contains("${{") && !r.contains("self-hosted");
+                if (prReachable) {
+                    assertThat(literalHosted)
+                            .as("%s runs on pull requests, so job '%s' must name a hosted runner "
+                                    + "literally (ubuntu-latest); it says '%s'", relative, job.getKey(), r)
+                            .isTrue();
+                } else {
+                    assertThat(literalHosted || r.equals(PUBLISH_RUNS_ON))
+                            .as("%s job '%s': runs-on must be a literal hosted label or exactly "
+                                    + "%s; it says '%s'", relative, job.getKey(), PUBLISH_RUNS_ON, r)
+                            .isTrue();
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("pom.xml builds a publishable version and pins every net.hugmesh coordinate exactly")
+    void pomVersionAndNetHugmeshPinsArePublishable() throws Exception {
+        assertThat(projectVersion())
+                .as("pom.xml's version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-beta.N (no "
+                        + "SNAPSHOT, no build metadata): it becomes an immutable coordinate and a "
+                        + "v<version> git tag")
+                .matches(PUBLISHABLE_VERSION);
+
+        DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+        f.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        f.setNamespaceAware(false);
+        Document doc = f.newDocumentBuilder().parse(new File(repoRoot().resolve("pom.xml").toString()));
+        int pins = 0;
+        for (String tag : List.of("parent", "dependency")) {
+            NodeList nodes = doc.getElementsByTagName(tag);
+            for (int i = 0; i < nodes.getLength(); i++) {
+                String group = "";
+                String artifact = "";
+                String version = "";
+                NodeList kids = nodes.item(i).getChildNodes();
+                for (int k = 0; k < kids.getLength(); k++) {
+                    Node kid = kids.item(k);
+                    switch (kid.getNodeName()) {
+                        case "groupId" -> group = kid.getTextContent().trim();
+                        case "artifactId" -> artifact = kid.getTextContent().trim();
+                        case "version" -> version = kid.getTextContent().trim();
+                        default -> { }
+                    }
+                }
+                if (!"net.hugmesh".equals(group)) {
+                    continue;
+                }
+                pins++;
+                assertThat(version)
+                        .as("net.hugmesh:%s is pinned to '%s'. Dependents pin a literal published "
+                                + "version (MAJOR.MINOR.PATCH or -beta.N): no SNAPSHOT, no range, no "
+                                + "property, no LATEST/RELEASE", artifact, version)
+                        .matches(PUBLISHABLE_VERSION);
+            }
+        }
+        assertThat(pins).as("pom.xml names no net.hugmesh coordinate — this check passed vacuously")
+                .isGreaterThanOrEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("on the self-hosted runner the publish job never writes into the person's own ~/.m2")
+    void publishJobLeavesTheRunnerUsersMavenHomeAlone() throws Exception {
+        Map<?, ?> workflow = releaseWorkflow();
+        int setupJava = 0;
+        for (Map.Entry<String, Map<?, ?>> job : jobs(workflow).entrySet()) {
+            for (Map<?, ?> step : jobSteps(job.getValue())) {
+                if (!String.valueOf(step.get("uses")).startsWith("actions/setup-java@")) {
+                    continue;
+                }
+                setupJava++;
+                Map<?, ?> with = step.get("with") instanceof Map<?, ?> m ? m : Map.of();
+                assertThat(String.valueOf(with.get("settings-path")))
+                        .as("job '%s': actions/setup-java writes settings.xml into ~/.m2 by default, "
+                                + "REPLACING the runner user's own file on the self-hosted runner. "
+                                + "Set `settings-path: ${{ runner.temp }}`.", job.getKey())
+                        .contains("runner.temp");
+                assertThat(String.valueOf(with.get("cache")))
+                        .as("job '%s': setup-java `cache: maven` restores an archive over the runner "
+                                + "user's ~/.m2/repository on the self-hosted runner", job.getKey())
+                        .isNotEqualTo("maven");
+            }
+        }
+        assertThat(setupJava).as("%s has no actions/setup-java step — this guard passed vacuously",
+                RELEASE_WORKFLOW).isGreaterThan(0);
+
+        List<String> mvn = runCommands(workflow).stream().filter(c -> c.contains("./mvnw")).toList();
+        assertThat(mvn).as("%s runs no ./mvnw command — this guard passed vacuously", RELEASE_WORKFLOW)
+                .isNotEmpty()
+                .allSatisfy(c -> assertThat(c)
+                        .as("every Maven run must use the job-private local repository "
+                                + "(-Dmaven.repo.local=\"${MAVEN_LOCAL_REPO}\"), never the runner user's "
+                                + "~/.m2/repository, where a hand-built upstream would satisfy the build "
+                                + "without proving the registry holds it: %s", c)
+                        .contains("-Dmaven.repo.local=\"${MAVEN_LOCAL_REPO}\""));
+    }
+
+    @Test
+    @DisplayName("the chain dispatches each link on its v<version> tag, never on a branch")
+    void releaseChainDispatchesEachLinkOnItsVersionTag() throws Exception {
+        String script = String.join("\n", runCommands(parseWorkflow(CHAIN_WORKFLOW)));
+        assertThat(script)
+                .as("%s must dispatch each link ON ITS TAG (a dispatch on a branch only verifies) "
+                        + "and derive the tag from that repo's pom.xml version", CHAIN_WORKFLOW)
+                .contains("tag=\"v$version\"")
+                .contains("--ref \"$tag\"")
+                .contains("git/ref/tags/$tag")
+                .contains("gh release view \"$tag\"");
     }
 }
