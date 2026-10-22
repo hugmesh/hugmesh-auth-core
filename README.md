@@ -186,8 +186,9 @@ fleet-wide cannot break a local stack. The cluster runs `casdoor,clickhouse` and
 An unprofiled deployment counts as NOT dev, the safe direction for a passkey RP ID. mDNS `*.local`
 hosts are deliberately **not** loopback (a LAN node may be `foo.local`). RFC-6761 `*.localhost` is.
 
-Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.8.0 and hugmesh-commons 2.1.0 from
-`~/.m2`). It runs the full test suite. A handful of MFA-repo data-slice tests need a real Postgres
+Build: `./mvnw -o clean package` (resolves hugmesh-parent 2.9.0-beta.1 and hugmesh-commons
+2.2.0-beta.1 from `~/.m2`; until those betas are published, install them there from their own
+repos first). It runs the full test suite. A handful of MFA-repo data-slice tests need a real Postgres
 through Testcontainers, so a local run also needs Docker (or `-Dtest='!*PostgresTest'` to skip just
 those). `./mvnw -o clean verify` also runs PMD, Checkstyle and SpotBugs (see Current State and Known
 Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged with `main` at
@@ -199,17 +200,21 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
 `spotbugs/exclude-filter.xml` triaged the 8 `EI_EXPOSE_REP2` findings (see Known Gaps).
 
 ## Current State
-- **Version 2.6.0** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
-  Java 25 LTS** (eclipse-temurin:25), inherited from `hugmesh-parent` (metapom) **2.8.0**. The parent
+- **Version 2.6.0-beta.1** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
+  Java 25 LTS** (eclipse-temurin:25), inherited from `hugmesh-parent` (metapom) **2.9.0-beta.1**. The
+  version follows the org beta scheme (`MAJOR.MINOR.PATCH-beta.N`, [`RELEASING.md`](RELEASING.md)
+  §0): 2.6.0 was never published, so its first published build is the beta. The parent
   runs **PMD + Checkstyle + SpotBugs** during `verify` and pins **testcontainers 2.0.5**. All three
   analysers fail the build (SpotBugs through `failOnError` since the 2.8.0 bump). See Known Gaps for
   how this module's 8 findings were triaged.
-- Depends on `hugmesh-commons` **2.1.0** (stateless security and tenancy). A `2.7.0` commons was never
-  published: #23 pinned `2.0.0`, and the rebrand (#36) moved the pin to `2.1.0`. **No cycle**:
+- Depends on `hugmesh-commons` **2.2.0-beta.1** (stateless security and tenancy). A `2.7.0` commons was never
+  published: #23 pinned `2.0.0`, the rebrand (#36) moved the pin to `2.1.0`, and the beta scheme
+  moved it to `2.2.0-beta.1`. **No cycle**:
   commons does not depend on this core.
-- **Consumers: `user-bff` and `admin-bff` only.** Both pin 2.5.1. This repo's `main` now builds
-  2.6.0 (see [`CHANGELOG.md`](CHANGELOG.md)); [`RELEASING.md`](RELEASING.md) §3 and §6 record 2.5.1
-  as not yet published, and 2.6.0 is not published either. The gateway depends on commons, NOT on
+- **Consumers: `user-bff` and `admin-bff` only.** Both pin 2.5.1 and move to 2.6.0-beta.1 in their
+  own repos. This repo's `main` now builds 2.6.0-beta.1 (see [`CHANGELOG.md`](CHANGELOG.md));
+  [`RELEASING.md`](RELEASING.md) §3 and §6 record 2.5.1 as not yet published, and nothing at 2.6.0
+  is published either. The gateway depends on commons, NOT on
   this jar, which keeps r2dbc/casdoor/mfa off the gateway classpath.
 - Reactive throughout: **Spring Data R2DBC** repositories and no raw `DatabaseClient`, matching the
   org data-access standard. Hand-written SQL sits in `@Query` static-final constants on the
@@ -324,9 +329,12 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
 - **No `spring.cloud.gateway.*` route config lives here.** This is a library, not a gateway. The SCG-5
   route-namespace move (`spring.cloud.gateway.routes` → `spring.cloud.gateway.server.webflux.routes`)
   is a gateway/generator concern and does not touch this module.
-- **Release/CI.** Two GitHub Actions workflows exist, both `workflow_dispatch`-only:
-  `.github/workflows/release.yml` and `.github/workflows/release-chain.yml`. The Actions runs API reports
-  **zero runs to date** (2026-10-15). The GitLab path (`.gitlab-ci.yml`) cannot run: no repo carries a
+- **Release/CI.** Two GitHub Actions workflows exist. `.github/workflows/release.yml` publishes
+  when a person pushes a `v<version>` tag that matches `pom.xml` (and re-runs on a dispatch on that
+  tag); a dispatch on `main` only verifies, and there is no branch-push or pull-request trigger.
+  `.github/workflows/release-chain.yml` is dispatch-only and re-runs the four library links in order,
+  each on its tag. Both pick the self-hosted runner only through the `RUNS_ON_PUBLISH` variable
+  ([`RELEASING.md`](RELEASING.md) §0). The Actions runs API reported **zero runs** (2026-10-15). The GitLab path (`.gitlab-ci.yml`) cannot run: no repo carries a
   GitLab remote and `gitlab.hugmesh.net` does not resolve (the mesh deploys that host itself, see
   `hugmesh-generator/specs/cluster/apps/03-gitlab.yaml`). `main` is the only long-lived branch; the
   remote also holds short-lived topic branches. The measured release

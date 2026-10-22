@@ -7,9 +7,55 @@ ways of looking finished while publishing nothing.
 
 ---
 
+## 0. Beta scheme (2026-10-21) — read this first
+
+This section supersedes the parts of §1, §5 and §6 below that say "no git tags" and
+"`workflow_dispatch` only". The rest of this file still holds.
+
+- **Version string:** `MAJOR.MINOR.PATCH-beta.N`, no `+build` part, never `-SNAPSHOT` for
+  anything published. This repo is at **`2.6.0-beta.1`**: 2.6.0 was never published and no
+  consumer pins it, so the beta goes on the declared version. N starts at 1, goes up by 1 for
+  every published beta of 2.6.0, and a fix during the beta raises N, not PATCH.
+- **Chain for this beta:** `hugmesh-build-config 0.6.0-beta.1` → `hugmesh-parent
+  2.9.0-beta.1` → `hugmesh-commons 2.2.0-beta.1` (jar and `tests`) →
+  `hugmesh-auth-core 2.6.0-beta.1`. `pom.xml` pins the parent and commons betas literally.
+- **The tag is the publish decision.** A person pushes an annotated tag `v<version>` on a
+  commit on `main`, for example `git tag -a v2.6.0-beta.1 -m 'hugmesh-auth-core 2.6.0-beta.1'`
+  then `git push origin v2.6.0-beta.1`. That push runs `release.yml`:
+  - the **version guard** fails unless the tag minus its `v` equals `pom.xml`'s `<version>`,
+    and refuses a `-SNAPSHOT`;
+  - `verify` runs; the deploy step first **refuses a version that is already in the
+    registry** (a published coordinate is never overwritten), then deploys;
+  - a **GitHub Release** is created for the tag, marked prerelease and **never "latest"** for
+    a beta.
+- **`workflow_dispatch` on a `v*` tag** is the re-run path (same as the tag push).
+  **`workflow_dispatch` on `main`** only runs `verify`: nothing is deployed. Any other ref is
+  refused. There is **no push-to-branch trigger** and **no pull_request trigger**, ever.
+- **Runner.** Every job uses one expression: the self-hosted runner named by the repository
+  variable `RUNS_ON_PUBLISH` (a JSON array, for example `["self-hosted","Linux","X64"]`) only
+  for a non-PR event on `main` or a `v*` tag, hosted `ubuntu-latest` otherwise, and also
+  whenever that variable is unset. **Deleting `RUNS_ON_PUBLISH` is the off switch.** Nothing
+  here reads the old `RUNS_ON` variable. The org's only runner group, `Default`, refuses public
+  repositories, so once this repo is public a job sent to the self-hosted runner waits
+  forever. Before setting `RUNS_ON_PUBLISH` on a public repo, move the runner to a group that
+  allows public repositories and only runs the release workflows; otherwise leave the variable
+  unset and publish on hosted runners.
+- **The job uses its own Maven local repository** under `RUNNER_TEMP`, not `~/.m2`. On the
+  self-hosted runner `~/.m2` is a person's own cache: an upstream built by hand there would
+  satisfy the build without proving the registry holds it, and `deploy` would install into it.
+  For the same reason `actions/setup-java` gets `settings-path: ${{ runner.temp }}` (by default
+  it writes `~/.m2/settings.xml`, replacing that person's own file) and no `cache: maven`.
+- **`release-chain.yml`** now dispatches each link **on its `v<version>` tag** (read from that
+  repo's default-branch `pom.xml`), requires the tag to exist, and skips a link whose GitHub
+  Release already exists. Use it after the tag-push runs have finished, to re-run in order the
+  links that failed because their upstream was not out yet.
+- `PACKAGES_READ_TOKEN` stays after the repos go public: GitHub Packages' Maven registry asks
+  for a token even to read a public package.
+
 ## 1. What a release IS here
 
-There are **no git tags** in any of the org's Java repos. A "release" is exactly two things:
+Before the beta scheme there were **no git tags** in any of the org's Java repos; since
+2026-10-21 a `v<version>` tag is what publishes (§0). A "release" is exactly two things:
 
 1. `pom.xml`'s `<version>` is bumped **in the same PR as the change**, and
 2. a jar for that coordinate is deployed to a Maven registry the consumers resolve from.
@@ -54,6 +100,18 @@ a trigger collapses to the same key set. The trigger check is an allowlist
 (`ONLY_ALLOWED_TRIGGER`), not a blacklist of `push` spellings. **If a new trigger is ever
 deliberate, widen that constant in the same change and record why here** — the whole point is
 that publish-on-its-own cannot arrive as a silent edit.
+
+**Widened deliberately on 2026-10-21 (beta scheme, §0).** `ONLY_ALLOWED_TRIGGER` is now
+`{workflow_dispatch, push}`, and a `push` is accepted only as a mapping whose sole key is
+`tags` with `v*` patterns, so a branch push (a merge to `main`) still cannot publish. Five more
+checks pin the rest of §0: the deploy step runs only when the version guard classified the
+run as a release, after a step that refuses an already-published version; the GitHub Release
+is `--verify-tag --prerelease --latest=false` for a beta and waits for the publish job; every
+job's `runs-on` is a literal hosted label or exactly the guarded `RUNS_ON_PUBLISH`
+expression, and nothing reads `vars.RUNS_ON`; `pom.xml`'s version and every `net.hugmesh` pin
+are `MAJOR.MINOR.PATCH` or `-beta.N`; and `release-chain.yml` dispatches each link on its
+`v<version>` tag. The README and CHANGELOG version patterns now capture the `-beta.N` part,
+so `2.6.0-beta.1` can never be read back as `2.6.0`.
 
 ## 2. The two publish paths this repo carries
 
@@ -246,8 +304,10 @@ constructor alongside the new 5-arg one.
       Postgres via Testcontainers; without Docker they are the only thing that drops out).
 - [x] §3.2 resolution route agreed and landed — `.github/maven-ci-settings.xml` (2026-09-17).
 - [ ] §3.2's other half — the upstream chain actually **published**. Still open; see §6.
-- [ ] `Release` workflow still `workflow_dispatch`-only — `ONLY_ALLOWED_TRIGGER` unwidened.
-- [ ] `Release` workflow run from the GitHub UI (`workflow_dispatch`; it never runs on push).
+- [ ] `Release` workflow still fires only on `workflow_dispatch` and a `v*` tag push —
+      `ONLY_ALLOWED_TRIGGER` / `RELEASE_TRIGGERS` unwidened, no branch push (§0).
+- [ ] Annotated tag `v<version>` pushed on a `main` commit (§0); its `Release` run is green and
+      its GitHub Release is a prerelease that is not "latest".
 - [ ] The published coordinate actually fetched back once, by a consumer, before any pin moves.
 - [ ] `m2-bootstrap.sh` `PINS` row added and `test-m2-bootstrap.sh` run.
 - [ ] Consumer pins bumped (§4), each with its manifest env in the same change.
@@ -389,10 +449,14 @@ It is not a launch-only stopgap to be retired afterwards.
    it: `RELEASE_CHAIN_TOKEN` is read only by `release-chain.yml`'s `gh` calls and is never
    passed to maven. Each repo's own deploy step uses the automatic `secrets.GITHUB_TOKEN`,
    which is correct and needs nothing.
-4. **Run one workflow.** `hugmesh-auth-core` → Actions → **Release chain** → Run workflow,
-   `confirm` = `PUBLISH`. It dispatches, in order, `hugmesh-build-config` →
-   `hugmesh-parent` → `hugmesh-commons` → `hugmesh-auth-core`, waiting for each and stopping
-   at the first failure rather than publishing the rest on top of a hole.
+4. **Push the four tags, then run one workflow.** Since the beta scheme (§0) each link
+   publishes on its own `v<version>` tag. Push them in chain order and let each tag's
+   `Release` run finish before the next, or push all four and then, once those runs are done,
+   run `hugmesh-auth-core` → Actions → **Release chain** → Run workflow on `main`,
+   `confirm` = `PUBLISH`. It walks `hugmesh-build-config` → `hugmesh-parent` →
+   `hugmesh-commons` → `hugmesh-auth-core`, skips each link whose GitHub Release already
+   exists, dispatches the rest **on their tags**, waits for each, and stops at the first
+   failure rather than publishing the rest on top of a hole.
    (Skipping step 3 and clicking each repo's own **Release** workflow by hand, in that
    order, is the same publish with four buttons instead of one. Step 2 is **not** skippable
    either way — it authorises the reads, not the dispatch.)

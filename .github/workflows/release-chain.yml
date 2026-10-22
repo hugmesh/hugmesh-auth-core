@@ -3,49 +3,53 @@
 #
 # net.hugmesh is four repos that depend on each other at build time, in this order:
 #
-#     hugmesh-build-config 0.5.0   (no net.hugmesh parent; the analysers' ruleset jar)
-#       -> hugmesh-parent 2.8.0    (metapom; needs build-config on the plugin classpath)
-#         -> hugmesh-commons 2.1.0 (jar AND the `tests` classifier)
+#     hugmesh-build-config   (no net.hugmesh parent; the analysers' ruleset jar)
+#       -> hugmesh-parent    (metapom; needs build-config on the plugin classpath)
+#         -> hugmesh-commons (jar AND the `tests` classifier)
 #           -> hugmesh-auth-core   (this repo)
 #
-# Each link's own Release workflow is workflow_dispatch-only and publishes exactly one
-# repo. This workflow fires all four in order and waits for each to finish, so launch day
-# is one button rather than four buttons in an order nobody remembers.
+# BETA SCHEME (2026-10-21). Each link publishes when a person pushes its v<version> tag
+# (for example v0.6.0-beta.1, v2.9.0-beta.1, v2.2.0-beta.1, v2.6.0-beta.1); a dispatch on a
+# branch only verifies. If the four tags go out together, the links race and every link
+# after the first fails at "Could not resolve" because its upstream is not out yet. This
+# workflow is the in-order repair: for each link, in build order, it reads the version that
+# repo's default branch declares in pom.xml, requires the matching v<version> tag to exist,
+# SKIPS the link when its GitHub Release for that tag already exists (the Release is
+# created only after a successful deploy), and otherwise dispatches that repo's Release
+# workflow ON THE TAG and waits for it. The first failure stops the chain.
 #
 # IT IS INERT WITHOUT A SECRET, ON PURPOSE. secrets.GITHUB_TOKEN is scoped to THIS
 # repository and cannot dispatch a workflow in hugmesh-build-config / hugmesh-parent /
 # hugmesh-commons. Cross-repo dispatch needs a PAT in RELEASE_CHAIN_TOKEN with
-# Actions: read and write on all four repos (fine-grained), or classic `repo` + `workflow`.
-# Store it as a REPOSITORY secret on this repo (the only one that reads it): the org is on the
-# Free plan and the repos are private, and an org secret is understood not to reach private
-# repos on that plan (RELEASING.md section 6.2, "Secret scope").
-# Until that secret exists this workflow fails on its first step with that message — it
-# does not half-publish.
+# Actions: read and write plus Contents: read on all four repos (fine-grained), or classic
+# `repo` + `workflow`. Store it as a REPOSITORY secret on this repo (the only one that reads
+# it). Until that secret exists this workflow fails on its first step with that message —
+# it does not half-publish.
 #
-# BEFORE RUNNING IT, READ RELEASING.md section 6. On 2026-09-17 no Actions job in this org
-# started at all (billing; hugmesh-generator run 35288155335, job 105424969429). Hosted
-# runners work again as of 2026-10-07, but this chain has still never been dispatched and
-# the secrets above were measured absent that day.
+# Runner: the self-hosted runner named by RUNS_ON_PUBLISH when dispatched from main,
+# hosted ubuntu-latest otherwise. This workflow has no pull_request trigger, ever.
+#
+# BEFORE RUNNING IT, READ RELEASING.md section 6.
 name: Release chain
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type PUBLISH to confirm. This publishes four immutable coordinates.'
+        description: 'Type PUBLISH to confirm. This publishes up to four immutable coordinates.'
         required: true
-        default: ''
-      ref:
-        description: 'Git ref to publish from in every repo (default: each repo default branch)'
-        required: false
         default: ''
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-chain
+  cancel-in-progress: false
+
 jobs:
   chain:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) && vars.RUNS_ON_PUBLISH || '"ubuntu-latest"') }}
     steps:
       - name: Confirm and check the cross-repo credential
         env:
@@ -66,7 +70,6 @@ jobs:
       - name: Publish the chain in order
         env:
           GH_TOKEN: ${{ secrets.RELEASE_CHAIN_TOKEN }}
-          INPUT_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
 
@@ -77,18 +80,37 @@ jobs:
           WORKFLOW="release.yml"
 
           for repo in $REPOS; do
-            ref="$INPUT_REF"
-            if [ -z "$ref" ]; then
-              ref=$(gh api "repos/$repo" --jq .default_branch)
+            branch=$(gh api "repos/$repo" --jq .default_branch)
+            # The project's OWN <version> on the default branch (not <parent>'s).
+            version=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$repo/contents/pom.xml?ref=$branch" \
+              | python3 -c 'import sys, xml.etree.ElementTree as ET
+          v = ET.fromstring(sys.stdin.read()).find("{http://maven.apache.org/POM/4.0.0}version")
+          sys.exit("pom.xml declares no project-level <version>") if v is None else print(v.text.strip())')
+            tag="v$version"
+            echo "::group::$repo $tag"
+
+            case "$version" in
+              *-SNAPSHOT)
+                echo "::error::$repo: $branch declares $version, a SNAPSHOT. Nothing is published from a SNAPSHOT. Chain stopped BEFORE $repo."
+                exit 1
+                ;;
+            esac
+            if ! gh api "repos/$repo/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::$repo: tag $tag does not exist. Push it (annotated, on main) first: the tag is the publish decision. Chain stopped BEFORE $repo; the links before it are published and are immutable."
+              exit 1
             fi
-            echo "::group::$repo @ $ref"
+            if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+              echo "$repo $tag: GitHub Release exists, so this link is already published. Skipping."
+              echo "::endgroup::"
+              continue
+            fi
 
             # Record the newest existing run id FIRST. Polling for "the newest run" right
             # after a dispatch races the API and can latch onto a previous run that is
             # already completed, reporting success for work that never started.
             before=$(gh api "repos/$repo/actions/workflows/$WORKFLOW/runs?per_page=1" --jq '.workflow_runs[0].id // 0')
 
-            gh workflow run "$WORKFLOW" --repo "$repo" --ref "$ref"
+            gh workflow run "$WORKFLOW" --repo "$repo" --ref "$tag"
 
             run_id=0
             for _ in $(seq 1 60); do
@@ -100,7 +122,7 @@ jobs:
               fi
             done
             if [ "$run_id" = "0" ]; then
-              echo "::error::$repo: dispatched $WORKFLOW but no new run appeared within 5 minutes. Chain stopped BEFORE $repo published; the links before it are already published and are immutable."
+              echo "::error::$repo: dispatched $WORKFLOW on $tag but no new run appeared within 5 minutes. Chain stopped BEFORE $repo published; the links before it are already published and are immutable."
               exit 1
             fi
             echo "$repo run: https://github.com/$repo/actions/runs/$run_id"
@@ -112,4 +134,4 @@ jobs:
             echo "::endgroup::"
           done
 
-          echo "chain complete: all four coordinates published"
+          echo "chain complete: every link is published at the version its default branch declares"

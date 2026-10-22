@@ -1,42 +1,127 @@
-# Manual release: build/test hugmesh-auth-core and publish the library jar to GitHub
-# Packages (Maven registry). Mirrors the build:test + deploy:maven stages in this repo's
+# Release: build/test hugmesh-auth-core and publish the library jar to GitHub Packages
+# (Maven registry). Mirrors the build:test + deploy:maven stages in this repo's
 # .gitlab-ci.yml, ported to the GitHub Packages Maven registry for the hugmesh org.
 #
-# workflow_dispatch ONLY — intentionally never runs on push/tag. Stays fully inert until a
-# human enables it.
+# WHEN IT PUBLISHES (beta scheme, 2026-10-21). The git TAG is the publish decision:
 #
-# READ RELEASING.md BEFORE RUNNING THIS. This is the LAST link of a four-repo chain
-# (build-config 0.5.0 -> parent 2.8.0 -> commons 2.1.0 -> auth-core 2.5.1); running it
-# before its upstreams are published fails at parent resolution, in `Build and test`,
-# before `deploy` is reached. .github/workflows/release-chain.yml fires all four in order.
+#   push of tag v<version>            verify, then deploy <version>, then a GitHub
+#                                     Release (prerelease, never "latest" for a beta)
+#   workflow_dispatch on a v* tag     the same; this is the re-run path
+#   workflow_dispatch on main         verify only; nothing is deployed
+#   anything else                     refused by the version guard
+#
+# There is NO push-to-branch trigger. A Maven coordinate is immutable: publishing on every
+# merge is what made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin. The tag must
+# equal pom.xml's <version> exactly, the version must not be a -SNAPSHOT, and a version that
+# is already in the registry is refused rather than overwritten.
+#
+# There is no pull_request trigger either, ever. Every job picks its runner with the same
+# expression: the self-hosted runner named by the repository variable RUNS_ON_PUBLISH (a
+# JSON array such as ["self-hosted","Linux","X64"]) only for a non-PR event on main or a
+# v* tag; hosted ubuntu-latest otherwise, and also whenever RUNS_ON_PUBLISH is unset.
+# Deleting RUNS_ON_PUBLISH is the off switch for the local runner.
+#
+# READ RELEASING.md BEFORE TAGGING. This is the LAST link of a four-repo chain
+# (build-config 0.6.0-beta.1 -> parent 2.9.0-beta.1 -> commons 2.2.0-beta.1 ->
+# auth-core 2.6.0-beta.1); running it before its upstreams are published fails at parent
+# resolution, in `Build and test`, before the deploy step is reached.
+# .github/workflows/release-chain.yml re-runs the unpublished links in order.
 #
 # Operator decision 27 (hugmesh-generator#347, 2026-09-17): "B for the mechanism, A
 # prepared" — the source-build mechanism (m2-bootstrap.sh from pinned SHAs) is unchanged
-# and stays the way the compose lane builds this library. This workflow is the prepared,
-# unfired publish path.
+# and stays the way the compose lane builds this library.
 name: Release
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-latest
+  # VERSION GUARD. Decides what this run is allowed to do, before anything is built.
+  version:
+    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) && vars.RUNS_ON_PUBLISH || '"ubuntu-latest"') }}
+    outputs:
+      version: ${{ steps.guard.outputs.version }}
+      kind: ${{ steps.guard.outputs.kind }}
+      prerelease: ${{ steps.guard.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Version guard
+        id: guard
+        env:
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The project's OWN <version>: the direct child of <project>, never <parent>'s.
+          version=$(python3 -c 'import sys, xml.etree.ElementTree as ET
+          v = ET.parse("pom.xml").getroot().find("{http://maven.apache.org/POM/4.0.0}version")
+          sys.exit("pom.xml declares no project-level <version>") if v is None else print(v.text.strip())')
+          echo "pom.xml version: ${version}"
+          case "${version}" in
+            *-SNAPSHOT)
+              echo "::error::pom.xml version ${version} is a SNAPSHOT. A published coordinate is immutable; set a real version (for example 2.6.0-beta.1) first."
+              exit 1
+              ;;
+          esac
+          if [ "${REF_TYPE}" = "tag" ] && [ "${REF}" = "refs/tags/${REF_NAME}" ] && [ "${REF_NAME#v}" != "${REF_NAME}" ]; then
+            if [ "${REF_NAME#v}" != "${version}" ]; then
+              echo "::error::tag ${REF_NAME} does not match pom.xml version ${version}. Tag v${version}, or fix pom.xml, README.md and CHANGELOG.md first. Nothing published."
+              exit 1
+            fi
+            kind=release
+          elif [ "${REF}" = "refs/heads/main" ]; then
+            kind=main
+          else
+            echo "::error::this workflow runs only on main (verify only) or on a v<version> tag (publish). Got ${REF}. Nothing published."
+            exit 1
+          fi
+          case "${version}" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+          echo "kind=${kind} prerelease=${prerelease}"
+          {
+            echo "version=${version}"
+            echo "kind=${kind}"
+            echo "prerelease=${prerelease}"
+          } >> "${GITHUB_OUTPUT}"
+
+  publish:
+    needs: version
+    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) && vars.RUNS_ON_PUBLISH || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # A job-private local repository. On the self-hosted runner ~/.m2 is a person's own
+      # Maven cache: an upstream they built by hand there would satisfy this build without
+      # ever proving the registry holds it, and `deploy` would install this jar into it.
+      # RUNNER_TEMP is emptied after every job. This is also why setup-java's `cache: maven`
+      # is not used: on a self-hosted runner it restores an archive over that same ~/.m2.
+      - name: Use a job-private Maven repository
+        run: echo "MAVEN_LOCAL_REPO=${RUNNER_TEMP}/m2-repository" >> "${GITHUB_ENV}"
 
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "25"
-          cache: maven
-          # NOTE: setup-java's generated ~/.m2/settings.xml is NOT what authenticates this
+          # NOTE: setup-java's generated settings.xml is NOT what authenticates this
           # build. Every mvn invocation below passes `-s .github/maven-ci-settings.xml`,
           # and `-s` REPLACES the user settings file. The server entries that matter live
           # in that file. These inputs are kept only so the generated file is not
@@ -44,6 +129,10 @@ jobs:
           server-id: github
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
+          # setup-java writes its settings.xml into ~/.m2 unless told otherwise, replacing
+          # whatever is there. On the self-hosted runner ~/.m2/settings.xml is a person's own
+          # file, so the generated one goes under RUNNER_TEMP, which is emptied after the job.
+          settings-path: ${{ runner.temp }}
 
       # PREFLIGHT - CROSS-REPO PACKAGE READ. This step exists to stop ONE specific
       # misdiagnosis, and that is worth a whole step.
@@ -52,8 +141,10 @@ jobs:
       # repositories. secrets.GITHUB_TOKEN is scoped to THIS repository, and GitHub does not
       # hand it cross-repository package access automatically: the build must present a
       # token carrying read:packages, which is the PACKAGES_READ_TOKEN secret (a classic
-      # PAT with read:packages; decision 90a = B). If it is not set, maven fails with
-      #     Could not resolve net.hugmesh:hugmesh-parent:pom:2.8.0
+      # PAT with read:packages; decision 90a = B). GitHub Packages' Maven registry wants a
+      # token even for a PUBLIC package, so this stays after the repositories go public.
+      # If it is not set, maven fails with
+      #     Could not resolve net.hugmesh:hugmesh-parent:pom:2.9.0-beta.1
       # which is the SAME string this repo's RELEASING.md and the comments below teach a
       # reader to interpret as "the upstream is not published yet". A reader who believes
       # that goes and re-publishes an upstream that is already there, and hits the same wall.
@@ -62,9 +153,6 @@ jobs:
       # name the failure correctly. A 200 proves this runner can READ that upstream's Maven
       # registry. It does NOT prove the exact version pinned in pom.xml exists - maven says
       # that, accurately, one step later.
-      #
-      # NOT VERIFIED. No Actions job in this org has ever started (billing; RELEASING.md
-      # 6.1), so this preflight has never run either.
       - name: Preflight - cross-repo package read
         env:
           UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
@@ -106,15 +194,14 @@ jobs:
 
       # -s .github/maven-ci-settings.xml is LOAD-BEARING. The effective repository list of
       # this project is Maven Central alone (measured: `help:evaluate
-      # -Dexpression=project.repositories` returns only `central`), and none of
-      # net.hugmesh:hugmesh-parent:2.8.0 / hugmesh-commons:2.1.0 / hugmesh-build-config:0.5.0
-      # are on Central (404, all three). That settings file is the ONLY place the GitHub
-      # Packages URLs are declared — deliberately not pom.xml, because
-      # maven.pkg.github.com answers 401 to an unauthenticated GET and putting it in the pom
-      # would break every developer build and hugmesh-generator/tests/stack/m2-bootstrap.sh.
-      # See RELEASING.md 3.2 and the header of the settings file itself.
+      # -Dexpression=project.repositories` returns only `central`), and no net.hugmesh
+      # artifact is on Central. That settings file is the ONLY place the GitHub Packages URLs
+      # are declared — deliberately not pom.xml, because maven.pkg.github.com answers 401 to
+      # an unauthenticated GET and putting it in the pom would break every developer build
+      # and hugmesh-generator/tests/stack/m2-bootstrap.sh. See RELEASING.md 3.2 and the
+      # header of the settings file itself.
       - name: Build and test
-        run: ./mvnw -B -ntp -s .github/maven-ci-settings.xml verify
+        run: ./mvnw -B -ntp -s .github/maven-ci-settings.xml -Dmaven.repo.local="${MAVEN_LOCAL_REPO}" verify
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -123,6 +210,34 @@ jobs:
           # unset; the preflight step above reports that case.
           UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
           UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # A published version is never overwritten. 200 = it is already there: stop. 404 = not
+      # there yet: go on. Anything else: this token cannot tell, and the deploy below uses the
+      # same token, so stop and say so instead of guessing.
+      - name: Refuse a version that is already published
+        if: needs.version.outputs.kind == 'release'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          url="https://maven.pkg.github.com/${REPOSITORY}/net/hugmesh/hugmesh-auth-core/${VERSION}/hugmesh-auth-core-${VERSION}.pom"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" "${url}" || echo 000)
+          case "${code}" in
+            404)
+              echo "net.hugmesh:hugmesh-auth-core:${VERSION} is not published yet; deploying it."
+              ;;
+            200)
+              echo "::error::net.hugmesh:hugmesh-auth-core:${VERSION} is ALREADY published. A published version is immutable: raise the beta number (pom.xml, README.md, CHANGELOG.md) and tag again. Nothing deployed."
+              exit 1
+              ;;
+            *)
+              echo "::error::HTTP ${code} while checking whether ${VERSION} is already published. Not classified; nothing deployed."
+              exit 1
+              ;;
+          esac
 
       # -DaltDeploymentRepository is LOAD-BEARING, not decoration. This pom declares no
       # <distributionManagement>, so it inherits hugmesh-parent's, which is
@@ -136,7 +251,8 @@ jobs:
       # hugmesh-parent/.github/workflows/release.yml and
       # hugmesh-build-config/.github/workflows/release.yml.
       - name: Publish jar to GitHub Packages
-        run: ./mvnw -B -ntp -s .github/maven-ci-settings.xml deploy -DskipTests -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/${{ github.repository }}
+        if: needs.version.outputs.kind == 'release'
+        run: ./mvnw -B -ntp -s .github/maven-ci-settings.xml -Dmaven.repo.local="${MAVEN_LOCAL_REPO}" deploy -DskipTests -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/${{ github.repository }}
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -145,3 +261,33 @@ jobs:
           # unset; the preflight step above reports that case.
           UPSTREAM_PACKAGES_ACTOR: ${{ secrets.PACKAGES_READ_ACTOR || github.actor }}
           UPSTREAM_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  github-release:
+    needs: [version, publish]
+    if: needs.version.outputs.kind == 'release'
+    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/studio-v')) && vars.RUNS_ON_PUBLISH || '"ubuntu-latest"') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; leaving it as it is."
+            exit 0
+          fi
+          notes="net.hugmesh:hugmesh-auth-core:${VERSION} is published to GitHub Packages (https://github.com/${GH_REPO}/packages). What changed is in CHANGELOG.md."
+          if [ "${PRERELEASE}" = "true" ]; then
+            # A beta is a prerelease and never the repository's "latest" release.
+            gh release create "${TAG}" --verify-tag --prerelease --latest=false \
+              --title "hugmesh-auth-core ${VERSION}" --notes "${notes}"
+          else
+            gh release create "${TAG}" --verify-tag \
+              --title "hugmesh-auth-core ${VERSION}" --notes "${notes}"
+          fi

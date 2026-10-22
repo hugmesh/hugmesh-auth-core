@@ -1,8 +1,9 @@
 # Changelog — hugmesh-auth-core
 
-Coordinates: `net.hugmesh:hugmesh-auth-core`. One `main` branch, no git tags (the org's
-repos carry none — consumers pin a **version**, and the cold-build bootstrap pins the
-**commit SHA** whose `pom.xml` declares that version; see `RELEASING.md`).
+Coordinates: `net.hugmesh:hugmesh-auth-core`. One `main` branch. Consumers pin a **version**,
+and the cold-build bootstrap pins the **commit SHA** whose `pom.xml` declares that version. Since
+the beta scheme (2026-10-21) a published version also has an annotated `v<version>` git tag,
+and pushing that tag is what publishes it; see `RELEASING.md` §0.
 
 The **newest heading here must equal `pom.xml`'s `<version>`** and the `**Version X.Y.Z**`
 line in `README.md` — pinned by `ReleaseMetadataGuardTest`, because the two have drifted
@@ -10,11 +11,25 @@ before (2.5.1 landed in `pom.xml` at `fe2bf3a` and in the README only at `dba8a8
 
 ---
 
-## 2.6.0 — PREPARED, NOT PUBLISHED (prepared 2026-10-21, hugmesh-auth-core#21)
+## 2.6.0-beta.1 — PREPARED, NOT PUBLISHED (prepared 2026-10-21, hugmesh-auth-core#21)
 
 A minor bump because the change below is consumer-visible (new public API), per
 `RELEASING.md` §1. Release content is the `main` commit that merges hugmesh-auth-core#21.
-Like 2.5.1, it has not been published: nothing in `RELEASING.md` §3 changed.
+Like 2.5.1, it has not been published. It is the first published form of 2.6.0 under the org
+beta scheme (`RELEASING.md` §0): 2.6.0 itself was never published and no consumer pins it, so
+the beta goes on the declared version. It builds on `hugmesh-parent` **2.9.0-beta.1** and
+`hugmesh-commons` **2.2.0-beta.1** (jar and `tests`), which must be published first.
+
+### Release path (beta scheme)
+- `release.yml` now publishes on a push of the matching `v2.6.0-beta.1` tag (and on a dispatch
+  on that tag); a dispatch on `main` only runs `verify`. A version guard matches the tag to
+  `pom.xml` and refuses `-SNAPSHOT`, the deploy refuses a version already in the registry, and
+  the GitHub Release is a prerelease that is never "latest". Jobs reach the self-hosted runner
+  only through the guarded `RUNS_ON_PUBLISH` variable, and use a job-private Maven repository.
+- `release-chain.yml` dispatches each link on its `v<version>` tag and skips links that are
+  already released.
+- `ReleaseMetadataGuardTest` pins all of the above, and its README/CHANGELOG version patterns
+  now capture the `-beta.N` part.
 
 ### Added
 - **Shared HTTP `bff_` session bridge** in `config/`, for services that have no local
