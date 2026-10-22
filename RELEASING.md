@@ -43,6 +43,8 @@ This section supersedes the parts of §1, §5 and §6 below that say "no git tag
 - **The job uses its own Maven local repository** under `RUNNER_TEMP`, not `~/.m2`. On the
   self-hosted runner `~/.m2` is a person's own cache: an upstream built by hand there would
   satisfy the build without proving the registry holds it, and `deploy` would install into it.
+  For the same reason `actions/setup-java` gets `settings-path: ${{ runner.temp }}` (by default
+  it writes `~/.m2/settings.xml`, replacing that person's own file) and no `cache: maven`.
 - **`release-chain.yml`** now dispatches each link **on its `v<version>` tag** (read from that
   repo's default-branch `pom.xml`), requires the tag to exist, and skips a link whose GitHub
   Release already exists. Use it after the tag-push runs have finished, to re-run in order the
