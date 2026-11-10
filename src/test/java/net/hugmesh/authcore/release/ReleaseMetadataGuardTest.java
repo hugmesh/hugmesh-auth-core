@@ -51,9 +51,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       what made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin (the GitLab
  *       {@code deploy:maven} job re-deploys at whatever version the pom holds). Since the beta
  *       scheme (2026-10-21) the workflow fires on {@code workflow_dispatch} and on a push of a
- *       {@code v*} TAG only, never on a branch push; the deploy runs only when the version
- *       guard has matched the tag to {@code pom.xml}. Any other trigger has to be a deliberate
- *       edit that also updates this guard.</li>
+ *       {@code v*} TAG; the only branch push it takes is the stable channel's
+ *       {@code release/**} (never {@code main}), and that run only verifies: the deploy runs
+ *       only when the version guard has matched a tag to {@code pom.xml} (kind=release; a
+ *       release/X.Y push is kind=branch). Any other trigger has to be a deliberate edit that
+ *       also updates this guard.</li>
  *   <li><b>Publish jobs never reach the self-hosted runner from a pull request.</b> Every
  *       job's {@code runs-on} is either a literal hosted label or the one guarded
  *       {@code RUNS_ON_PUBLISH} expression, and nothing reads the old {@code RUNS_ON}
@@ -110,7 +112,8 @@ class ReleaseMetadataGuardTest {
 
     /**
      * The only triggers a publishing workflow may carry: a human dispatch, and a push that
-     * is restricted to {@code v*} TAGS (see {@link #assertPushIsTagOnly}). Anything else
+     * is restricted to {@code v*} TAGS and release/** branches (see
+     * {@link #assertPushIsTagOrReleaseBranchOnly}). Anything else
      * publishes without a human decision.
      */
     private static final Set<String> ONLY_ALLOWED_TRIGGER = Set.of("workflow_dispatch", "push");
@@ -311,13 +314,19 @@ class ReleaseMetadataGuardTest {
         return null;
     }
 
+    /** The only branch filter a publishing workflow's push may carry: the stable channel's. */
+    private static final Set<String> RELEASE_BRANCH_PATTERNS = Set.of("release/**", "release/*");
+
     /**
-     * A {@code push} trigger on a publishing workflow must be restricted to {@code v*} tags:
-     * a mapping whose ONLY key is {@code tags}, every pattern starting with {@code v}. A bare
-     * {@code push} (no filter), any {@code branches}/{@code branches-ignore}, a
-     * {@code tags-ignore} or a {@code paths} filter all let a branch push publish.
+     * A {@code push} trigger on a publishing workflow must be restricted to {@code v*} tags
+     * and, optionally, the stable channel's release branches: a mapping whose keys are
+     * {@code tags} (every pattern starting with {@code v}) and optionally {@code branches}
+     * (every pattern exactly {@code release/**} or {@code release/*}, whose runs only
+     * verify). A bare {@code push} (no filter), a {@code main} or {@code **} branch, a
+     * {@code branches-ignore}, a {@code tags-ignore} or a {@code paths} filter all let a
+     * merge start a run.
      */
-    private static void assertPushIsTagOnly(String relative, Map<?, ?> workflow) {
+    private static void assertPushIsTagOrReleaseBranchOnly(String relative, Map<?, ?> workflow) {
         if (!triggerNames(workflow).contains("push")) {
             return;
         }
@@ -328,10 +337,30 @@ class ReleaseMetadataGuardTest {
                 .isInstanceOf(Map.class);
         Map<?, ?> pushMap = (Map<?, ?>) push;
         assertThat(pushMap.keySet().stream().map(String::valueOf).toList())
-                .as("%s: `push` may carry ONLY a `tags` filter; it declares %s. A `branches`, "
-                        + "`branches-ignore`, `tags-ignore` or `paths` key makes a branch push "
-                        + "(a merge to main) publish an immutable coordinate.", relative, pushMap.keySet())
-                .containsExactly("tags");
+                .as("%s: `push` may carry ONLY a `tags` filter and a `branches` filter of "
+                        + "release/**; it declares %s. A `branches-ignore`, `tags-ignore` or "
+                        + "`paths` key makes a branch push (a merge to main) start a run.",
+                        relative, pushMap.keySet())
+                .contains("tags")
+                .isSubsetOf("tags", "branches");
+        if (pushMap.containsKey("branches")) {
+            Object branches = pushMap.get("branches");
+            List<String> branchPatterns = new ArrayList<>();
+            if (branches instanceof Iterable<?> bit) {
+                bit.forEach(b -> branchPatterns.add(String.valueOf(b)));
+            } else {
+                branchPatterns.add(String.valueOf(branches));
+            }
+            assertThat(branchPatterns)
+                    .as("%s: push.branches must list at least one pattern", relative)
+                    .isNotEmpty()
+                    .allSatisfy(b -> assertThat(RELEASE_BRANCH_PATTERNS)
+                            .as("%s: push.branches pattern '%s' is not release/**. A push to "
+                                    + "main (or to any branch) would start a run on every merge; "
+                                    + "only the stable channel's release/X.Y branches may, and "
+                                    + "their runs only verify.", relative, b)
+                            .contains(b));
+        }
         Object tags = pushMap.get("tags");
         List<String> patterns = new ArrayList<>();
         if (tags instanceof Iterable<?> it) {
@@ -346,6 +375,31 @@ class ReleaseMetadataGuardTest {
                         .as("%s: push.tags pattern '%s' must start with 'v' (version tags only; "
                                 + "'*' or '**' would publish on any tag)", relative, t)
                         .startsWith("v"));
+    }
+
+    @Test
+    @DisplayName("release.yml runs on release/** pushes and carries the stable-channel marker the org release script requires")
+    void releaseWorkflowSupportsTheStableChannel() throws Exception {
+        Object push = triggerValue(releaseWorkflow(), "push");
+        assertThat(push).as("%s has no `push:` trigger", RELEASE_WORKFLOW).isInstanceOf(Map.class);
+        assertThat(String.valueOf(((Map<?, ?>) push).get("branches")))
+                .as("hugmesh-generator scripts/release.sh --channel stable needs a green push run "
+                        + "on release/X.Y before it tags, so %s must run on release/** pushes",
+                        RELEASE_WORKFLOW)
+                .isEqualTo("[release/**]");
+        assertThat(read(RELEASE_WORKFLOW).lines().toList())
+                .as("hugmesh-generator scripts/release.sh --channel stable refuses this repo "
+                        + "unless %s carries this literal marker line", RELEASE_WORKFLOW)
+                .contains("# hugmesh-release-channels: beta+stable");
+        String guard = String.join("\n", jobSteps(jobs(releaseWorkflow()).get("version")).stream()
+                .map(st -> String.valueOf(st.get("run"))).toList());
+        assertThat(guard)
+                .as("the version job must classify a release/X.Y push as kind=branch (verify "
+                        + "only) and ask scripts/release-channel.sh for the branch rules. Script: %s",
+                        guard)
+                .contains("kind=branch")
+                .contains("bash scripts/release-channel.sh")
+                .contains("bash scripts/test-release-channel.sh");
     }
 
     @Test
@@ -364,7 +418,7 @@ class ReleaseMetadataGuardTest {
                         + "RELEASE_TRIGGERS in the same change and say why in RELEASING.md.",
                         triggers)
                 .containsExactlyInAnyOrderElementsOf(RELEASE_TRIGGERS);
-        assertPushIsTagOnly(RELEASE_WORKFLOW, workflow);
+        assertPushIsTagOrReleaseBranchOnly(RELEASE_WORKFLOW, workflow);
     }
 
     // ===================================================================================
@@ -730,7 +784,7 @@ class ReleaseMetadataGuardTest {
                             relative, triggers, exempt)
                     .contains("workflow_dispatch")
                     .isSubsetOf(ONLY_ALLOWED_TRIGGER);
-            assertPushIsTagOnly(relative, workflow);
+            assertPushIsTagOrReleaseBranchOnly(relative, workflow);
         }
         assertThat(publishing)
                 .as("canPublish() exempted the release workflow itself, so this guard just passed "

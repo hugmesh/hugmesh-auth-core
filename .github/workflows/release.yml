@@ -2,21 +2,35 @@
 # (Maven registry). Mirrors the build:test + deploy:maven stages in this repo's
 # .gitlab-ci.yml, ported to the GitHub Packages Maven registry for the hugmesh org.
 #
-# WHEN IT PUBLISHES (beta scheme, 2026-10-21). The git TAG is the publish decision:
+# hugmesh-release-channels: beta+stable
+# WHEN IT PUBLISHES. The git TAG is the publish decision, and it decides the channel;
+# scripts/release-channel.sh holds the branch rules and scripts/test-release-channel.sh
+# tests them (the version job runs it first):
 #
-#   push of tag v<version>            verify, then deploy <version>, then a cosign
-#                                     keyless signature + build-provenance attestation
-#                                     over the published jar and pom, then a GitHub
-#                                     Release (with SHA256SUMS + signature; prerelease,
-#                                     never "latest" for a beta)
-#   workflow_dispatch on a v* tag     the same; this is the re-run path
-#   workflow_dispatch on main         verify only; nothing is deployed
-#   anything else                     refused by the version guard
+#   push of tag vX.Y.Z-beta.N         BETA, commit on main: verify, then deploy <version>,
+#                                     then a cosign keyless signature + build-provenance
+#                                     attestation over the published jar and pom, then a
+#                                     GitHub Release (with SHA256SUMS + signature) marked
+#                                     prerelease, never Latest
+#   push of tag vX.Y.Z                STABLE, commit on release/X.Y and no higher vX.Y.W:
+#                                     the same publish, then a full GitHub Release marked
+#                                     Latest only when X.Y is the newest stable line
+#                                     (decided again right before it is created)
+#   push to release/X.Y               verify only (pom.xml must be X.Y.*): the green branch
+#                                     run hugmesh-generator scripts/release.sh
+#                                     --channel stable requires before it tags
+#   workflow_dispatch on a v* tag     the same as the tag push; this is the re-run path
+#   workflow_dispatch on main or
+#   on release/X.Y                    verify only; nothing is deployed
+#   anything else (-rc.N tags,
+#   other branches)                   refused by the version job
 #
-# There is NO push-to-branch trigger. A Maven coordinate is immutable: publishing on every
-# merge is what made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin. The tag must
-# equal pom.xml's <version> exactly, the version must not be a -SNAPSHOT, and a version that
-# is already in the registry is refused rather than overwritten.
+# There is NO push trigger on main. A Maven coordinate is immutable: publishing on every
+# merge is what made 2.4.1 a mutable coordinate and forced the 2.4.2 re-pin. A push to
+# release/X.Y only verifies: every deploy, signing and release step is gated on
+# kind == 'release', which only a tag gets. The tag must equal pom.xml's <version> exactly,
+# the version must not be a -SNAPSHOT, and a version that is already in the registry is
+# refused rather than overwritten.
 #
 # There is no pull_request trigger either, ever. Every job picks its runner with the same
 # expression: the self-hosted runner named by the repository variable RUNS_ON_PUBLISH (a
@@ -37,6 +51,7 @@ name: Release
 
 on:
   push:
+    branches: ['release/**']
     tags: ['v*']
   workflow_dispatch: {}
 
@@ -55,10 +70,19 @@ jobs:
       version: ${{ steps.guard.outputs.version }}
       kind: ${{ steps.guard.outputs.kind }}
       prerelease: ${{ steps.guard.outputs.prerelease }}
+      channel: ${{ steps.channel.outputs.channel }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
+      - name: Self-test the release channel rules
+        run: bash scripts/test-release-channel.sh
+
+      # Reads only env vars and pom.xml: scripts/test-release-channel.sh runs this exact
+      # script with a table of refs and versions, so keep ${{ }} out of it.
       - name: Version guard
         id: guard
         env:
@@ -86,8 +110,17 @@ jobs:
             kind=release
           elif [ "${REF}" = "refs/heads/main" ]; then
             kind=main
+          elif [[ "${REF}" =~ ^refs/heads/release/([0-9]+)\.([0-9]+)$ ]]; then
+            case "${version}" in
+              "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}".*) ;;
+              *)
+                echo "::error::pom.xml version ${version} is not on the ${BASH_REMATCH[1]}.${BASH_REMATCH[2]} line, but this is ${REF#refs/heads/}. Nothing published."
+                exit 1
+                ;;
+            esac
+            kind=branch
           else
-            echo "::error::this workflow runs only on main (verify only) or on a v<version> tag (publish). Got ${REF}. Nothing published."
+            echo "::error::this workflow runs only on main or release/X.Y (verify only) or on a v<version> tag (publish). Got ${REF}. Nothing published."
             exit 1
           fi
           case "${version}" in
@@ -100,6 +133,14 @@ jobs:
             echo "kind=${kind}"
             echo "prerelease=${prerelease}"
           } >> "${GITHUB_OUTPUT}"
+
+      # The channel and the branch rules: a vX.Y.Z-beta.N tag must be on main, a stable
+      # vX.Y.Z on release/X.Y with no higher vX.Y.W. Refuses before anything is built.
+      - name: Decide the release channel
+        id: channel
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: bash scripts/release-channel.sh
 
   publish:
     needs: version
@@ -338,6 +379,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Asked again here, not read from the version job: a newer stable may have been
+      # published since that job ran (or since the run being re-run), and then this one
+      # must not be marked Latest.
+      - name: Decide again whether this release is Latest
+        id: channel
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/release-channel.sh
+
       - name: Fetch SHA256SUMS and its signature from the publish job
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
@@ -351,6 +407,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.version.outputs.version }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          LATEST: ${{ steps.channel.outputs.latest }}
         run: |
           set -euo pipefail
           if gh release view "${TAG}" >/dev/null 2>&1; then
@@ -358,13 +415,12 @@ jobs:
             exit 0
           fi
           notes="net.hugmesh:hugmesh-auth-core:${VERSION} is published to GitHub Packages (https://github.com/${GH_REPO}/packages). What changed is in CHANGELOG.md. SHA256SUMS lists the published files; SHA256SUMS.sigstore.json is its cosign keyless signature (identity https://github.com/hugmesh/hugmesh-auth-core/.github/workflows/release.yml@refs/tags/${TAG}, issuer https://token.actions.githubusercontent.com); each file also has a GitHub build-provenance attestation (gh attestation verify <file> --repo hugmesh/hugmesh-auth-core)."
+          flags=(--verify-tag --title "hugmesh-auth-core ${VERSION}" --notes "${notes}")
           if [ "${PRERELEASE}" = "true" ]; then
             # A beta is a prerelease and never the repository's "latest" release.
-            gh release create "${TAG}" --verify-tag --prerelease --latest=false \
-              --title "hugmesh-auth-core ${VERSION}" --notes "${notes}" \
-              release/SHA256SUMS release/SHA256SUMS.sigstore.json
+            flags+=(--prerelease --latest=false)
           else
-            gh release create "${TAG}" --verify-tag \
-              --title "hugmesh-auth-core ${VERSION}" --notes "${notes}" \
-              release/SHA256SUMS release/SHA256SUMS.sigstore.json
+            # A stable is Latest only on the newest stable line (asked again above).
+            if [ "${LATEST:-}" = true ]; then flags+=(--latest); else flags+=(--latest=false); fi
           fi
+          gh release create "${TAG}" "${flags[@]}" release/SHA256SUMS release/SHA256SUMS.sigstore.json

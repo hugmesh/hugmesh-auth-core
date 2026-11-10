@@ -19,18 +19,20 @@ This section supersedes the parts of §1, §5 and §6 below that say "no git tag
 - **Chain for this beta:** `hugmesh-build-config 0.6.0-beta.1` → `hugmesh-parent
   2.9.0-beta.1` → `hugmesh-commons 2.2.0-beta.1` (jar and `tests`) →
   `hugmesh-auth-core 2.6.0-beta.1`. `pom.xml` pins the parent and commons betas literally.
-- **The tag is the publish decision.** A person pushes an annotated tag `v<version>` on a
-  commit on `main`, for example `git tag -a v2.6.0-beta.1 -m 'hugmesh-auth-core 2.6.0-beta.1'`
+- **The tag is the publish decision.** A person pushes an annotated tag `v<version>`: a beta
+  `vX.Y.Z-beta.N` on a commit on `main`, a stable `vX.Y.Z` on a commit on `release/X.Y`
+  ("Release channels" below). For example `git tag -a v2.6.0-beta.1 -m 'hugmesh-auth-core 2.6.0-beta.1'`
   then `git push origin v2.6.0-beta.1`. That push runs `release.yml`:
   - the **version guard** fails unless the tag minus its `v` equals `pom.xml`'s `<version>`,
     and refuses a `-SNAPSHOT`;
   - `verify` runs; the deploy step first **refuses a version that is already in the
     registry** (a published coordinate is never overwritten), then deploys;
   - a **GitHub Release** is created for the tag, marked prerelease and **never "latest"** for
-    a beta.
+    a beta; for a stable, marked Latest only when its line is the newest stable line.
 - **`workflow_dispatch` on a `v*` tag** is the re-run path (same as the tag push).
-  **`workflow_dispatch` on `main`** only runs `verify`: nothing is deployed. Any other ref is
-  refused. There is **no push-to-branch trigger** and **no pull_request trigger**, ever.
+  **`workflow_dispatch` on `main`**, and a **push to `release/X.Y`**, only run `verify`:
+  nothing is deployed. Any other ref is refused. There is **no push trigger on `main`** and
+  **no pull_request trigger**, ever.
 - **Runner.** Every job uses one expression: the self-hosted runner named by the repository
   variable `RUNS_ON_PUBLISH` (a JSON array, for example `["self-hosted","Linux","X64"]`) only
   for a non-PR event on `main` or a `v*` tag, hosted `ubuntu-latest` otherwise, and also
@@ -51,6 +53,53 @@ This section supersedes the parts of §1, §5 and §6 below that say "no git tag
   links that failed because their upstream was not out yet.
 - `PACKAGES_READ_TOKEN` stays after the repos go public: GitHub Packages' Maven registry asks
   for a token even to read a public package.
+
+## Release channels: beta from `main`, stable from `release/X.Y`
+
+The tag decides the channel. `.github/workflows/release.yml` carries the marker
+`hugmesh-release-channels: beta+stable` that the org release script looks for;
+`scripts/release-channel.sh` holds the branch rules, and `scripts/test-release-channel.sh`
+tests them, the workflow's own version guard and its `gh release create` step. The version
+job runs that test first, so a broken rule fails the run before anything is built.
+
+| Ref | Channel | What the run does |
+|---|---|---|
+| tag `vX.Y.Z-beta.N`, commit on `main` | beta | verify, deploy, sign, GitHub Release marked prerelease, never Latest |
+| tag `vX.Y.Z`, commit on `release/X.Y` | stable | verify, deploy, sign, full GitHub Release, marked Latest only when `X.Y` is the newest stable line (decided again right before the Release is created, so a re-run never marks an older line Latest) |
+| push to `release/X.Y` | none | `verify` only, nothing deployed; `pom.xml` must be `X.Y.*`. The org release script requires this run to be green before it tags `release/X.Y` |
+| `workflow_dispatch` on `main` or `release/X.Y` | none | `verify` only |
+| `workflow_dispatch` on a `v*` tag | as the tag | the re-run path; an existing GitHub Release is left alone |
+| anything else | refused | an `-rc.N` tag, a beta tag off `main`, a stable tag off its own `release/X.Y`, a stable older than a published `vX.Y.W`, a branch not named `release/X.Y`, a tag that is not `v` + the pom version |
+
+There is still no push trigger on `main` and no `pull_request` trigger. A `release/X.Y`
+push only verifies: every deploy, signing and GitHub Release step is gated on
+`kind == 'release'`, which only a matching `v*` tag gets. A published coordinate is
+immutable, so a stable fix goes out as the next patch, never over an existing version.
+A `release/X.Y` run always lands on hosted `ubuntu-latest`: the `RUNS_ON_PUBLISH`
+expression names only `main` and `v*` tags.
+
+### One command
+
+Releases are driven from `hugmesh-generator` (`docs/RELEASING.md` there). It reads this
+repo's version from `pom.xml` (its row in `scripts/release/repos.tsv`), so no version is
+typed for a beta or a stable cut. Every command below is a dry run until `--apply` is added.
+
+```
+scripts/release.sh                                   # beta: tag main's X.Y.Z-beta.N, whole org
+scripts/release.sh --only hugmesh-auth-core                # beta of this repo only
+scripts/release.sh --channel stable                  # stable cut: release/X.Y from main, X.Y.Z there
+scripts/release.sh --channel stable --version X.Y.Z --only hugmesh-auth-core
+                                                     # a patch on the existing release/X.Y
+```
+
+A new minor needs no edit to the workflow or the tests: bump `<version>` in `pom.xml` in a
+PR (the tests derive their fixture versions from it), merge, then run the command. A patch
+is: cherry-pick the fix onto `release/X.Y`, then the `--version X.Y.(Z+1)` command, which
+opens the version-bump PR into `release/X.Y`, waits for its green push run, and tags.
+
+`release-chain.yml` stays a beta tool: it reads each link's version from that repo's
+`main`, so it dispatches main's beta tags. A stable cut goes through the org release script
+above, which releases the four links in order from their own `release/X.Y` branches.
 
 ## 1. What a release IS here
 
