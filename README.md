@@ -331,7 +331,9 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
   is a gateway/generator concern and does not touch this module.
 - **Release/CI.** Two GitHub Actions workflows exist. `.github/workflows/release.yml` publishes
   when a person pushes a `v<version>` tag that matches `pom.xml` (and re-runs on a dispatch on that
-  tag); a dispatch on `main` only verifies, and there is no branch-push or pull-request trigger.
+  tag): a beta `vX.Y.Z-beta.N` from `main`, a stable `vX.Y.Z` from `release/X.Y`. A dispatch on
+  `main` and a push to `release/X.Y` only verify; there is no push trigger on `main` and no
+  pull-request trigger.
   `.github/workflows/release-chain.yml` is dispatch-only and re-runs the four library links in order,
   each on its tag. Both pick the self-hosted runner only through the `RUNS_ON_PUBLISH` variable
   ([`RELEASING.md`](RELEASING.md) §0). The Actions runs API reported **zero runs** (2026-10-15). The GitLab path (`.gitlab-ci.yml`) cannot run: no repo carries a
