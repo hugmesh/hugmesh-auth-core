@@ -11,6 +11,29 @@ before (2.5.1 landed in `pom.xml` at `fe2bf3a` and in the README only at `dba8a8
 
 ---
 
+## 2.7.0-beta.1 — PREPARED, NOT PUBLISHED (prepared 2026-11-12, for the 0.5.0-beta.1 org release)
+
+A version bump only, made for the org-wide 0.5.0-beta.1 release, which moves every library of
+the Maven chain to its next minor beta: `hugmesh-build-config` **0.7.0-beta.1** →
+`hugmesh-parent` **2.10.0-beta.1** → `hugmesh-commons` **2.3.0-beta.1** → this artifact.
+It builds on `hugmesh-parent` **2.10.0-beta.1** and `hugmesh-commons` **2.3.0-beta.1** (jar and
+`tests`), which must be published first.
+
+### Changed
+- `pom.xml`: `<version>` 2.6.0-beta.1 → 2.7.0-beta.1, `<parent>` hugmesh-parent 2.9.0-beta.1 →
+  2.10.0-beta.1, and both `hugmesh-commons` pins (jar and `tests`) 2.2.0-beta.1 → 2.3.0-beta.1.
+- The only other change on `main` since `v2.6.0-beta.1` is the release-channels workflow PR
+  (hugmesh-auth-core#34): `release.yml` publishes a beta from a `vX.Y.Z-beta.N` tag on `main`
+  and a stable from a `vX.Y.Z` tag on `release/X.Y`, with `scripts/release-channel.sh` holding
+  the branch rules and `scripts/test-release-channel.sh` testing them.
+
+### Not changed
+- Nothing under `src/main` changed since 2.6.0-beta.1 (#34 touched only the workflow, its
+  scripts, the docs and `ReleaseMetadataGuardTest`), so the jar's API and behaviour are the
+  same as 2.6.0-beta.1's. `2.6.0-beta.1 → 2.7.0-beta.1` is source- and binary-compatible.
+
+---
+
 ## 2.6.0-beta.1 — PREPARED, NOT PUBLISHED (prepared 2026-10-21, hugmesh-auth-core#21)
 
 A minor bump because the change below is consumer-visible (new public API), per
