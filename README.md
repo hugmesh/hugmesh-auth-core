@@ -200,16 +200,16 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
 `spotbugs/exclude-filter.xml` triaged the 8 `EI_EXPOSE_REP2` findings (see Known Gaps).
 
 ## Current State
-- **Version 2.6.0-beta.1** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
-  Java 25 LTS** (eclipse-temurin:25), inherited from `hugmesh-parent` (metapom) **2.9.0-beta.1**. The
+- **Version 2.7.0-beta.1** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
+  Java 25 LTS** (eclipse-temurin:25), inherited from `hugmesh-parent` (metapom) **2.10.0-beta.1**. The
   version follows the org beta scheme (`MAJOR.MINOR.PATCH-beta.N`, [`RELEASING.md`](RELEASING.md)
   §0): 2.6.0 was never published, so its first published build is the beta. The parent
   runs **PMD + Checkstyle + SpotBugs** during `verify` and pins **testcontainers 2.0.5**. All three
   analysers fail the build (SpotBugs through `failOnError` since the 2.8.0 bump). See Known Gaps for
   how this module's 8 findings were triaged.
-- Depends on `hugmesh-commons` **2.2.0-beta.1** (stateless security and tenancy). A `2.7.0` commons was never
+- Depends on `hugmesh-commons` **2.3.0-beta.1** (stateless security and tenancy). A `2.7.0` commons was never
   published: #23 pinned `2.0.0`, the rebrand (#36) moved the pin to `2.1.0`, and the beta scheme
-  moved it to `2.2.0-beta.1`. **No cycle**:
+  moved it to `2.2.0-beta.1`, and the 0.5.0-beta.1 org release to `2.3.0-beta.1`. **No cycle**:
   commons does not depend on this core.
 - **Consumers: `user-bff` and `admin-bff` only.** Both pin 2.5.1 and move to 2.6.0-beta.1 in their
   own repos. This repo's `main` now builds 2.6.0-beta.1 (see [`CHANGELOG.md`](CHANGELOG.md));
