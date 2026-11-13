@@ -200,7 +200,7 @@ Gaps for their enforcement). Measured 2026-10-15 on this README's branch merged 
 `spotbugs/exclude-filter.xml` triaged the 8 `EI_EXPOSE_REP2` findings (see Known Gaps).
 
 ## Current State
-- **Version 2.7.0-beta.1** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
+- **Version 2.7.0-beta.3** on the unified HugMesh baseline: **Spring Boot 4.0.7 / Spring Cloud 2025.1.2 /
   Java 25 LTS** (eclipse-temurin:25), inherited from `hugmesh-parent` (metapom) **2.10.0-beta.1**. The
   version follows the org beta scheme (`MAJOR.MINOR.PATCH-beta.N`, [`RELEASING.md`](RELEASING.md)
   §0): 2.6.0 was never published, so its first published build is the beta. The parent

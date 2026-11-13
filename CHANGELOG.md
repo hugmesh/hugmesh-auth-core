@@ -11,6 +11,22 @@ before (2.5.1 landed in `pom.xml` at `fe2bf3a` and in the README only at `dba8a8
 
 ---
 
+## 2.7.0-beta.3 — prepared 2026-11-13, for the 0.5.0-beta.2 org release
+
+A security dependency update on top of 2.7.0-beta.1.
+
+### Changed
+- `pom.xml`: `org.bouncycastle:bcprov-jdk18on` and `bcpkix-jdk18on` 1.84 → **1.85** (hugmesh-auth-core#36).
+  1.85 fixes GHSA-9pwp-9qqc-pr26 (critical: Name Constraints bypass via a trailing dot in an
+  rfc822Name or URI) and GHSA-qp49-qgx5-5m26 (high: a lazy ASN.1 sequence resets the
+  nesting-depth guard).
+
+### Not published: 2.7.0-beta.2
+`v2.7.0-beta.2` was tagged by the org release, but its release run stopped in
+`ReleaseMetadataGuardTest`: the version bump had moved `pom.xml` only, not this changelog or the
+README. Nothing was published under 2.7.0-beta.2, and a tag is never reused, so the release
+continues as 2.7.0-beta.3.
+
 ## 2.7.0-beta.1 — PREPARED, NOT PUBLISHED (prepared 2026-11-12, for the 0.5.0-beta.1 org release)
 
 A version bump only, made for the org-wide 0.5.0-beta.1 release, which moves every library of
