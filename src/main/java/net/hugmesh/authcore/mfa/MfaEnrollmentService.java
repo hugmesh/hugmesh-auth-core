@@ -245,17 +245,25 @@ public class MfaEnrollmentService {
         return currentRp().flatMap(rp -> challenges.consume(sessionToken, WebAuthnChallengeStore.PURPOSE_REGISTER)
                 .switchIfEmpty(Mono.error(ApiException.badRequest(
                         "no pending WebAuthn registration challenge (expired or not started)")))
-                .flatMap(challenge -> Mono.fromCallable(() ->
-                                rp.isPresent()
-                                        ? webauthn.verifyRegistration(attestationResponseJson, challenge, rp.get())
-                                        : webauthn.verifyRegistration(attestationResponseJson, challenge))
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .onErrorMap(WebAuthnService.WebAuthnException.class,
-                                e -> ApiException.unauthorized("WebAuthn registration did not verify"))
-                        .flatMap(cred -> webauthnCredentials.findByCredentialId(cred.credentialIdBase64Url())
-                                .flatMap(existing -> Mono.<String>error(ApiException.conflict(
-                                        "WebAuthn credential already registered")))
-                                .switchIfEmpty(Mono.defer(() -> storeWebAuthnCredential(ownerSubject, cred))))));
+                .flatMap(challenge -> registerVerified(ownerSubject, attestationResponseJson,
+                        challenge, rp)));
+    }
+
+    /** Verify the attestation under {@code rp} (legacy fixed RP when empty), reject a
+     *  duplicate credentialId, and store the credential + its mirror factor row. */
+    private Mono<String> registerVerified(String ownerSubject, String attestationResponseJson,
+                                          String challenge,
+                                          Optional<WebAuthnRelyingParty.Rp> rp) {
+        return Mono.fromCallable(() -> rp.isPresent()
+                        ? webauthn.verifyRegistration(attestationResponseJson, challenge, rp.get())
+                        : webauthn.verifyRegistration(attestationResponseJson, challenge))
+                .subscribeOn(Schedulers.boundedElastic())
+                .onErrorMap(WebAuthnService.WebAuthnException.class,
+                        e -> ApiException.unauthorized("WebAuthn registration did not verify"))
+                .flatMap(cred -> webauthnCredentials.findByCredentialId(cred.credentialIdBase64Url())
+                        .flatMap(existing -> Mono.<String>error(ApiException.conflict(
+                                "WebAuthn credential already registered")))
+                        .switchIfEmpty(Mono.defer(() -> storeWebAuthnCredential(ownerSubject, cred))));
     }
 
     private Mono<String> storeWebAuthnCredential(String ownerSubject,

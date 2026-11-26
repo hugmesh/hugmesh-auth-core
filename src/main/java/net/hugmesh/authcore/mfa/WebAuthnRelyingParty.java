@@ -52,6 +52,10 @@ public class WebAuthnRelyingParty {
 
     /** One resolved Relying Party: the RP ID and the origins a response may carry. */
     public record Rp(String rpId, Set<Origin> origins) {
+        /** An immutable copy: a resolved RP is shared across a ceremony and never changes. */
+        public Rp {
+            origins = origins == null ? Set.of() : Set.copyOf(origins);
+        }
     }
 
     /** A request the per-request mode cannot run a ceremony for, with the sentence why. */
