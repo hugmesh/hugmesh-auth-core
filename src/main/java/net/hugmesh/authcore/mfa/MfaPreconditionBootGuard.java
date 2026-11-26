@@ -2,7 +2,6 @@ package net.hugmesh.authcore.mfa;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -155,8 +154,6 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
     private final boolean devProfileActive;
     private final MfaSecretCipher cipher;
     private final RecoveryCodeService recoveryCodes;
-    /** The mesh domains the per-request Relying Party accepts when rp-id is unset (#39). */
-    private final List<String> rpDomains;
 
     @Autowired
     public MfaPreconditionBootGuard(
@@ -169,31 +166,9 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
             @Value("${" + PROP_ORIGINS + ":}") String originsCsv,
             MfaSecretCipher cipher,
             RecoveryCodeService recoveryCodes,
-            Environment environment,
-            ObjectProvider<WebAuthnRelyingParty> relyingParty) {
-        this(mfaEnabled, failFast, rpId, originsCsv, cipher, recoveryCodes, environment,
-                relyingParty == null ? null : relyingParty.getIfAvailable());
-    }
-
-    /** As above with the resolver itself (null = none, the pre-#39 check). */
-    MfaPreconditionBootGuard(boolean mfaEnabled, boolean failFast, String rpId, String originsCsv,
-                             MfaSecretCipher cipher, RecoveryCodeService recoveryCodes,
-                             Environment environment, WebAuthnRelyingParty relyingParty) {
+            Environment environment) {
         this(mfaEnabled, failFast, rpId, originsCsv, cipher, recoveryCodes,
-                isDevLike(environment == null ? null : environment.getActiveProfiles()),
-                relyingParty == null || relyingParty.isFixed() ? List.of() : relyingParty.domains());
-    }
-
-    /** The pre-#39 constructor (no per-request Relying Party): unchanged for its callers. */
-    public MfaPreconditionBootGuard(boolean mfaEnabled,
-                                    boolean failFast,
-                                    String rpId,
-                                    String originsCsv,
-                                    MfaSecretCipher cipher,
-                                    RecoveryCodeService recoveryCodes,
-                                    Environment environment) {
-        this(mfaEnabled, failFast, rpId, originsCsv, cipher, recoveryCodes, environment,
-                (WebAuthnRelyingParty) null);
+                isDevLike(environment == null ? null : environment.getActiveProfiles()));
     }
 
     /** Profile-resolved form (the unit-test seam) — {@code devProfileActive} already decided. */
@@ -204,20 +179,6 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
                              MfaSecretCipher cipher,
                              RecoveryCodeService recoveryCodes,
                              boolean devProfileActive) {
-        this(mfaEnabled, failFast, rpId, originsCsv, cipher, recoveryCodes, devProfileActive,
-                List.of());
-    }
-
-    /** As above, plus the per-request Relying Party's mesh domains (the #39 test seam). */
-    MfaPreconditionBootGuard(boolean mfaEnabled,
-                             boolean failFast,
-                             String rpId,
-                             String originsCsv,
-                             MfaSecretCipher cipher,
-                             RecoveryCodeService recoveryCodes,
-                             boolean devProfileActive,
-                             List<String> rpDomains) {
-        this.rpDomains = rpDomains == null ? List.of() : List.copyOf(rpDomains);
         this.mfaEnabled = mfaEnabled;
         this.failFast = failFast;
         this.rpId = rpId == null ? "" : rpId.trim();
@@ -329,9 +290,7 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
         if (problems.isEmpty()) {
             log.info("[mfa-preconditions] MFA enabled and preconditions OK (factor key present, "
                     + "WebAuthn rp-id='{}'{}) — boot OK",
-                    !rpId.isEmpty() ? rpId
-                            : rpDomains.isEmpty() ? "localhost (default)"
-                            : "per request: localhost + " + rpDomains,
+                    rpId.isEmpty() ? "localhost (default)" : rpId,
                     devProfileActive ? ", dev profile" : "");
             return;
         }
@@ -380,16 +339,6 @@ public class MfaPreconditionBootGuard implements SmartInitializingSingleton {
 
     /** PRECONDITION 2 — a real WebAuthn Relying Party outside dev, else every passkey is wrong. */
     private void checkWebAuthnRelyingParty(List<String> problems) {
-        if (rpId.isEmpty() && !rpDomains.isEmpty()) {
-            // Per-request Relying Party (hugmesh-auth-core#39): each ceremony runs under the
-            // page's own host when it is localhost or one of these domains — the deployed
-            // domain(s) are covered without a fixed rp-id, so there is nothing to report.
-            log.info("[mfa-preconditions] WebAuthn Relying Party is PER REQUEST: the page's own "
-                    + "host when it is localhost or one of {} (the sign-in issuer's host + {}); "
-                    + "IP and .onion addresses are refused with a reason", rpDomains,
-                    "app.mfa.webauthn.rp-domains");
-            return;
-        }
         boolean rpIdLoopback = rpId.isEmpty() || isLoopbackHost(rpId);
         boolean originsLoopback = isAllLoopbackOrigins(originsCsv);
 
