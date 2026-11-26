@@ -151,10 +151,8 @@ public class MfaEnrollmentController {
                         .map(list -> Map.<String, Object>of("factors", list))));
     }
 
-    /** Remove a factor (owner-scoped). STEP-UP gated for an ENABLED factor: a fresh MFA
-     *  satisfaction is required so a hijacked session cannot strip MFA. An unfinished
-     *  (disabled) factor grants nothing and is removed without step-up — a user with no working
-     *  factor cannot satisfy one, and was left unable to clear a stuck enrolment (2026-11-26). */
+    /** Remove a factor (owner-scoped). STEP-UP gated: a fresh MFA satisfaction is required so a
+     *  hijacked session cannot strip MFA. */
     @Operation(summary = "Remove factor", operationId = "mfaEnrollmentRemoveFactor")
     @DeleteMapping("/factors/{id}")
     public Mono<Map<String, Object>> removeFactor(
@@ -162,9 +160,7 @@ public class MfaEnrollmentController {
             @PathVariable String id,
             @CookieValue(name = SessionCookieWebFilter.SESSION_COOKIE, required = false) String cookie,
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String header) {
-        return dark(auth).then(service.isPendingFactor(subjectOf(auth), id))
-                .flatMap(pending -> pending ? Mono.<Void>empty() : requireStepUp(cookie, header))
-                .then(Mono.defer(() ->
+        return dark(auth).then(requireStepUp(cookie, header)).then(Mono.defer(() ->
                 service.removeFactor(subjectOf(auth), id)
                         .map(removed -> Map.<String, Object>of("removed", removed))));
     }

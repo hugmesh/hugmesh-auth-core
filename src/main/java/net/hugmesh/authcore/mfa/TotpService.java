@@ -100,40 +100,6 @@ public class TotpService {
         return -1;
     }
 
-    /**
-     * DIAGNOSIS ONLY, never acceptance: the step offset (in 30 s steps, from {@code now}) at
-     * which {@code code} DOES match {@code base32Secret}, searching ±{@code maxSteps}, or
-     * {@code null} when it matches none. Used after a failed verify to tell the user WHY: a
-     * match far from now means the device clock is wrong; no match at all means the code is
-     * not from this secret (typically an older entry of the same name in the authenticator
-     * app). It never changes the verify outcome.
-     */
-    public Integer offsetOf(String base32Secret, String code, Instant now, int maxSteps) {
-        if (base32Secret == null || code == null) {
-            return null;
-        }
-        String c = code.trim();
-        if (c.length() != DIGITS || !c.chars().allMatch(Character::isDigit)) {
-            return null;
-        }
-        byte[] key;
-        try {
-            key = base32Decode(base32Secret);
-        } catch (RuntimeException e) {
-            return null;
-        }
-        long current = currentCounter(now);
-        for (int d = 0; d <= maxSteps; d++) {
-            if (constantTimeEquals(generate(key, current - d), c)) {
-                return -d;
-            }
-            if (d > 0 && constantTimeEquals(generate(key, current + d), c)) {
-                return d;
-            }
-        }
-        return null;
-    }
-
     /** The {@code otpauth://totp/...} URI for the QR (issuer = brand, account = user). */
     public String otpauthUri(String accountName, String base32Secret) {
         String label = enc(issuer) + ":" + enc(accountName == null ? "user" : accountName);

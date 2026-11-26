@@ -138,18 +138,9 @@ public class WebAuthnService {
      */
     public RegisteredCredential verifyRegistration(String registrationResponseJson,
                                                    String challengeB64Url) {
-        return verifyRegistration(registrationResponseJson, challengeB64Url,
-                new WebAuthnRelyingParty.Rp(rpId, origins));
-    }
-
-    /** {@link #verifyRegistration(String, String)} under an explicit Relying Party — the one
-     *  {@link WebAuthnRelyingParty#resolve} chose for this request (hugmesh-auth-core#39). */
-    public RegisteredCredential verifyRegistration(String registrationResponseJson,
-                                                   String challengeB64Url,
-                                                   WebAuthnRelyingParty.Rp rp) {
         try {
             Challenge challenge = new DefaultChallenge(Base64UrlUtil.decode(challengeB64Url));
-            ServerProperty serverProperty = new ServerProperty(rp.origins(), rp.rpId(), challenge, null);
+            ServerProperty serverProperty = new ServerProperty(origins, rpId, challenge, null);
             // userVerificationRequired=false (2FA: presence is enough), userPresenceRequired=true.
             RegistrationParameters params = new RegistrationParameters(serverProperty, null, false, true);
             RegistrationData data = manager.verifyRegistrationResponseJSON(registrationResponseJson, params);
@@ -205,19 +196,6 @@ public class WebAuthnService {
                                 String challengeB64Url,
                                 String storedAttestationCborB64,
                                 long storedSignCount) {
-        return verifyAssertion(authenticationResponseJson, challengeB64Url,
-                storedAttestationCborB64, storedSignCount,
-                new WebAuthnRelyingParty.Rp(rpId, origins));
-    }
-
-    /** {@link #verifyAssertion(String, String, String, long)} under an explicit Relying Party
-     *  (hugmesh-auth-core#39). A credential registered under another RP ID fails here: the
-     *  authenticator signed that other RP ID's hash. */
-    public long verifyAssertion(String authenticationResponseJson,
-                                String challengeB64Url,
-                                String storedAttestationCborB64,
-                                long storedSignCount,
-                                WebAuthnRelyingParty.Rp rp) {
         try {
             AttestationObject attestationObject = attestationObjectConverter.convert(
                     java.util.Base64.getDecoder().decode(storedAttestationCborB64));
@@ -231,7 +209,7 @@ public class WebAuthnService {
             credentialRecord.setCounter(storedSignCount);
 
             Challenge challenge = new DefaultChallenge(Base64UrlUtil.decode(challengeB64Url));
-            ServerProperty serverProperty = new ServerProperty(rp.origins(), rp.rpId(), challenge, null);
+            ServerProperty serverProperty = new ServerProperty(origins, rpId, challenge, null);
             AuthenticationParameters params = new AuthenticationParameters(
                     serverProperty, credentialRecord, null, false, true);
 
