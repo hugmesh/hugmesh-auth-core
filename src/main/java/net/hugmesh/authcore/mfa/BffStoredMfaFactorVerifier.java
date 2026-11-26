@@ -1,9 +1,12 @@
 package net.hugmesh.authcore.mfa;
 
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
+import java.util.Optional;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import net.hugmesh.authcore.casdoor.MfaFactorVerifier;
@@ -47,7 +50,10 @@ public class BffStoredMfaFactorVerifier implements MfaFactorVerifier {
     private final RecoveryCodeService recovery;
     private final WebAuthnService webauthn;
     private final WebAuthnChallengeStore challenges;
+    /** Chooses the WebAuthn Relying Party per request (#39); null = the legacy fixed RP. */
+    private final WebAuthnRelyingParty relyingParty;
 
+    /** Direct construction (tests): the legacy fixed Relying Party of {@link WebAuthnService}. */
     public BffStoredMfaFactorVerifier(MfaFactorR2dbcRepository factors,
                                       MfaRecoveryCodeR2dbcRepository recoveryCodes,
                                       WebAuthnCredentialR2dbcRepository webauthnCredentials,
@@ -56,6 +62,21 @@ public class BffStoredMfaFactorVerifier implements MfaFactorVerifier {
                                       RecoveryCodeService recovery,
                                       WebAuthnService webauthn,
                                       WebAuthnChallengeStore challenges) {
+        this(factors, recoveryCodes, webauthnCredentials, cipher, totp, recovery, webauthn,
+                challenges, (ObjectProvider<WebAuthnRelyingParty>) null);
+    }
+
+    @Autowired
+    public BffStoredMfaFactorVerifier(MfaFactorR2dbcRepository factors,
+                                      MfaRecoveryCodeR2dbcRepository recoveryCodes,
+                                      WebAuthnCredentialR2dbcRepository webauthnCredentials,
+                                      MfaSecretCipher cipher,
+                                      TotpService totp,
+                                      RecoveryCodeService recovery,
+                                      WebAuthnService webauthn,
+                                      WebAuthnChallengeStore challenges,
+                                      ObjectProvider<WebAuthnRelyingParty> relyingParty) {
+        this.relyingParty = relyingParty == null ? null : relyingParty.getIfAvailable();
         this.factors = factors;
         this.recoveryCodes = recoveryCodes;
         this.webauthnCredentials = webauthnCredentials;
@@ -147,13 +168,30 @@ public class BffStoredMfaFactorVerifier implements MfaFactorVerifier {
     private Mono<Boolean> verifyAndAdvanceSignCount(String subject, String assertionJson,
                                                     String challenge,
                                                     WebAuthnCredentialRow cred) {
-        return Mono.fromCallable(() ->
-                        webauthn.verifyAssertion(assertionJson, challenge,
+        return currentRp().flatMap(rp -> Mono.fromCallable(() -> rp.isPresent()
+                        ? webauthn.verifyAssertion(assertionJson, challenge,
+                                cred.publicKeyCose(), cred.signCount(), rp.get())
+                        : webauthn.verifyAssertion(assertionJson, challenge,
                                 cred.publicKeyCose(), cred.signCount()))
-                .subscribeOn(Schedulers.boundedElastic())
+                .subscribeOn(Schedulers.boundedElastic()))
                 .flatMap(newCount -> advanceSignCountIfChanged(subject, cred, newCount))
                 .onErrorResume(WebAuthnService.WebAuthnException.class,
                         e -> Mono.just(false));
+    }
+
+    /** The Relying Party for this request (#39). A refusal (an IP or onion origin, a host that
+     *  is not the mesh's) cannot verify a passkey, so the check simply fails. */
+    private Mono<Optional<WebAuthnRelyingParty.Rp>> currentRp() {
+        if (relyingParty == null) {
+            return Mono.just(Optional.empty());   // legacy fixed RP (direct construction)
+        }
+        return Mono.deferContextual(ctx -> {
+            try {
+                return Mono.just(Optional.of(relyingParty.resolve(WebAuthnOriginWebFilter.from(ctx))));
+            } catch (WebAuthnRelyingParty.Refused e) {
+                return Mono.error(new WebAuthnService.WebAuthnException(e.getMessage()));
+            }
+        });
     }
 
     /** Advance the sign count monotonically; accept a genuine always-0-counter authenticator. */
