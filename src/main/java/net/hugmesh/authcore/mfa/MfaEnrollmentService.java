@@ -2,6 +2,8 @@ package net.hugmesh.authcore.mfa;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -9,7 +11,9 @@ import reactor.core.scheduler.Schedulers;
 import net.hugmesh.commons.web.ApiException;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * The BFF-OWNED MFA factor lifecycle (enroll / list / remove / recovery), the D6+D8 web
@@ -42,7 +46,10 @@ public class MfaEnrollmentService {
     private final RecoveryCodeService recovery;
     private final WebAuthnService webauthn;
     private final WebAuthnChallengeStore challenges;
+    /** Chooses the WebAuthn Relying Party per request (#39); null = the legacy fixed RP. */
+    private final WebAuthnRelyingParty relyingParty;
 
+    /** Direct construction (tests): the legacy fixed Relying Party of {@link WebAuthnService}. */
     public MfaEnrollmentService(MfaFactorR2dbcRepository factors,
                                 MfaRecoveryCodeR2dbcRepository recoveryCodes,
                                 WebAuthnCredentialR2dbcRepository webauthnCredentials,
@@ -51,6 +58,21 @@ public class MfaEnrollmentService {
                                 RecoveryCodeService recovery,
                                 WebAuthnService webauthn,
                                 WebAuthnChallengeStore challenges) {
+        this(factors, recoveryCodes, webauthnCredentials, cipher, totp, recovery, webauthn,
+                challenges, (ObjectProvider<WebAuthnRelyingParty>) null);
+    }
+
+    @Autowired
+    public MfaEnrollmentService(MfaFactorR2dbcRepository factors,
+                                MfaRecoveryCodeR2dbcRepository recoveryCodes,
+                                WebAuthnCredentialR2dbcRepository webauthnCredentials,
+                                MfaSecretCipher cipher,
+                                TotpService totp,
+                                RecoveryCodeService recovery,
+                                WebAuthnService webauthn,
+                                WebAuthnChallengeStore challenges,
+                                ObjectProvider<WebAuthnRelyingParty> relyingParty) {
+        this.relyingParty = relyingParty == null ? null : relyingParty.getIfAvailable();
         this.factors = factors;
         this.recoveryCodes = recoveryCodes;
         this.webauthnCredentials = webauthnCredentials;
@@ -77,6 +99,18 @@ public class MfaEnrollmentService {
         String secret = totp.newSecret();
         String enc = cipher.encrypt(secret);
         String otpauth = totp.otpauthUri(accountName, secret);
+        // A new begin SUPERSEDES every earlier unfinished (disabled) TOTP row of this subject.
+        // Before 2026-11-26 each begin added a row and verify read the FIRST disabled one, so
+        // after a second tap the codes of the QR just scanned were checked against an older
+        // secret and never verified. A pending row grants nothing, so dropping it is safe.
+        return factors.findByOwnerSubjectAndType(ownerSubject, MfaFactorRow.TYPE_TOTP)
+                .filter(f -> !f.enabled())
+                .concatMap(f -> factors.deleteByIdAndOwner(f.id(), ownerSubject))
+                .then(insertPendingTotp(ownerSubject, enc, otpauth, secret));
+    }
+
+    private Mono<TotpEnrollResult> insertPendingTotp(String ownerSubject, String enc,
+                                                     String otpauth, String secret) {
         // Insert a DISABLED TOTP factor (encrypted secret, null counter) and let Postgres mint
         // the id (gen_random_uuid() DEFAULT); RETURNING id gives us the factor id for the result.
         return factors.insertReturningId(ownerSubject, MfaFactorRow.TYPE_TOTP, enc,
@@ -97,6 +131,10 @@ public class MfaEnrollmentService {
         }
         return factors.findByOwnerSubjectAndType(ownerSubject, MfaFactorRow.TYPE_TOTP)
                 .filter(f -> !f.enabled()) // the in-progress (disabled) row
+                // the NEWEST pending row: the QR the user just scanned (begin prunes the
+                // others; this also covers rows left by an older version of this service)
+                .sort(Comparator.comparing(MfaFactorRow::createdAt,
+                        Comparator.nullsFirst(Comparator.naturalOrder())).reversed())
                 .next()
                 .switchIfEmpty(Mono.error(ApiException.notFound(
                         "no pending TOTP enrollment — begin enroll first")))
@@ -110,11 +148,38 @@ public class MfaEnrollmentService {
         long step = totp.verify(secret,
                 row.lastCounter() == null ? -1L : row.lastCounter(), passcode);
         if (step < 0) {
-            return Mono.error(ApiException.unauthorized("TOTP code did not verify"));
+            return Mono.error(ApiException.unauthorized(totpFailureReason(secret, passcode)));
         }
         // Enable the factor + stamp the accepted step, then (re)issue recovery codes.
         return factors.enableTotp(row.id(), ownerSubject, step)
                 .then(regenerateRecoveryCodesInternal(ownerSubject));
+    }
+
+    /** How far (in 30 s steps) a failed enrolment code is searched for, to explain the failure:
+     *  ±20 steps = ±10 minutes. Diagnosis only — the code is rejected either way. */
+    static final int TOTP_DIAGNOSE_STEPS = 20;
+
+    /**
+     * The 401 message for an enrolment code that did not verify, saying WHY when it can be
+     * told (2026-11-26: a user failed five times and nothing said whether the phone's clock
+     * or the authenticator entry was wrong). Logs only the offset, never the code or secret.
+     */
+    String totpFailureReason(String secret, String passcode) {
+        Integer off = totp.offsetOf(secret, passcode, Instant.now(), TOTP_DIAGNOSE_STEPS);
+        if (off != null) {
+            long seconds = Math.abs(off) * 30L;
+            log.info("[mfa] TOTP enrolment code matched {} steps from now (device clock off ~{}s)",
+                    off, seconds);
+            return "That code is right but your device's clock is about "
+                    + (seconds >= 120 ? (seconds / 60) + " minutes" : seconds + " seconds")
+                    + (off < 0 ? " behind" : " ahead")
+                    + ". Turn on automatic date and time on the device, then enter a new code.";
+        }
+        log.info("[mfa] TOTP enrolment code matched no step within ±{} min of the pending key",
+                TOTP_DIAGNOSE_STEPS / 2);
+        return "That code is not from the key just set up. If your authenticator app lists "
+                + "more than one entry for this account, use the newest one or remove the older "
+                + "ones, then enter its current code.";
     }
 
     // ── recovery codes ─────────────────────────────────────────────────────────────────
@@ -146,9 +211,30 @@ public class MfaEnrollmentService {
     /** Issue a registration challenge bound to the session (stored pending). Returns the
      *  options the client passes to navigator.credentials.create(). */
     public Mono<WebAuthnOptions> beginWebAuthnEnroll(String sessionToken) {
-        String challenge = webauthn.newChallengeBase64Url();
-        return challenges.put(sessionToken, WebAuthnChallengeStore.PURPOSE_REGISTER, challenge)
-                .thenReturn(new WebAuthnOptions(challenge, webauthn.rpId(), webauthn.rpName()));
+        return currentRp().flatMap(rp -> {
+            String challenge = webauthn.newChallengeBase64Url();
+            return challenges.put(sessionToken, WebAuthnChallengeStore.PURPOSE_REGISTER, challenge)
+                    .thenReturn(new WebAuthnOptions(challenge,
+                            rp.map(WebAuthnRelyingParty.Rp::rpId).orElseGet(webauthn::rpId),
+                            webauthn.rpName()));
+        });
+    }
+
+    /** The Relying Party for the current request (hugmesh-auth-core#39): the request's
+     *  browser origin, resolved by {@link WebAuthnRelyingParty}; a refusal is a 400 whose
+     *  message the page shows. EMPTY = no resolver wired (direct construction): the legacy
+     *  fixed-RP methods of {@link WebAuthnService} are used, exactly as before. */
+    Mono<Optional<WebAuthnRelyingParty.Rp>> currentRp() {
+        if (relyingParty == null) {
+            return Mono.just(Optional.empty());
+        }
+        return Mono.deferContextual(ctx -> {
+            try {
+                return Mono.just(Optional.of(relyingParty.resolve(WebAuthnOriginWebFilter.from(ctx))));
+            } catch (WebAuthnRelyingParty.Refused e) {
+                return Mono.error(ApiException.badRequest(e.getMessage()));
+            }
+        });
     }
 
     /** Verify a registration attestation against the session's pending challenge + RP/origin,
@@ -156,18 +242,20 @@ public class MfaEnrollmentService {
      *  row. The WebAuthn verify is blocking -> boundedElastic. */
     public Mono<String> verifyWebAuthnEnroll(String ownerSubject, String sessionToken,
                                              String attestationResponseJson) {
-        return challenges.consume(sessionToken, WebAuthnChallengeStore.PURPOSE_REGISTER)
+        return currentRp().flatMap(rp -> challenges.consume(sessionToken, WebAuthnChallengeStore.PURPOSE_REGISTER)
                 .switchIfEmpty(Mono.error(ApiException.badRequest(
                         "no pending WebAuthn registration challenge (expired or not started)")))
                 .flatMap(challenge -> Mono.fromCallable(() ->
-                                webauthn.verifyRegistration(attestationResponseJson, challenge))
+                                rp.isPresent()
+                                        ? webauthn.verifyRegistration(attestationResponseJson, challenge, rp.get())
+                                        : webauthn.verifyRegistration(attestationResponseJson, challenge))
                         .subscribeOn(Schedulers.boundedElastic())
                         .onErrorMap(WebAuthnService.WebAuthnException.class,
                                 e -> ApiException.unauthorized("WebAuthn registration did not verify"))
                         .flatMap(cred -> webauthnCredentials.findByCredentialId(cred.credentialIdBase64Url())
                                 .flatMap(existing -> Mono.<String>error(ApiException.conflict(
                                         "WebAuthn credential already registered")))
-                                .switchIfEmpty(Mono.defer(() -> storeWebAuthnCredential(ownerSubject, cred)))));
+                                .switchIfEmpty(Mono.defer(() -> storeWebAuthnCredential(ownerSubject, cred))))));
     }
 
     private Mono<String> storeWebAuthnCredential(String ownerSubject,
@@ -188,9 +276,13 @@ public class MfaEnrollmentService {
      *  subject (from the JWT) but not necessarily the same session token. Keyed on subject so
      *  the challenge survives the challenge POST regardless of cookie/Bearer carrier. */
     public Mono<WebAuthnOptions> beginWebAuthnAssertion(String subject) {
-        String challenge = webauthn.newChallengeBase64Url();
-        return challenges.put(subject, WebAuthnChallengeStore.PURPOSE_ASSERT, challenge)
-                .thenReturn(new WebAuthnOptions(challenge, webauthn.rpId(), webauthn.rpName()));
+        return currentRp().flatMap(rp -> {
+            String challenge = webauthn.newChallengeBase64Url();
+            return challenges.put(subject, WebAuthnChallengeStore.PURPOSE_ASSERT, challenge)
+                    .thenReturn(new WebAuthnOptions(challenge,
+                            rp.map(WebAuthnRelyingParty.Rp::rpId).orElseGet(webauthn::rpId),
+                            webauthn.rpName()));
+        });
     }
 
     // ── list / remove ───────────────────────────────────────────────────────────────────
@@ -203,6 +295,15 @@ public class MfaEnrollmentService {
 
     /** Remove the caller's factor by id (owner-scoped). STEP-UP gated at the controller. Also
      *  prunes the backing WebAuthn credential rows when the factor is the last WEBAUTHN one. */
+    /** True when {@code factorId} is the caller's own UNFINISHED (disabled) factor: it grants
+     *  nothing, so removing it needs no step-up (a user with no working factor could not
+     *  satisfy one, and was left unable to clear a stuck enrolment). */
+    public Mono<Boolean> isPendingFactor(String ownerSubject, String factorId) {
+        return factors.findById(factorId)
+                .map(f -> ownerSubject.equals(f.ownerSubject()) && !f.enabled())
+                .defaultIfEmpty(false);
+    }
+
     public Mono<Boolean> removeFactor(String ownerSubject, String factorId) {
         return factors.findById(factorId)
                 // OWNER GUARD: a factor owned by another subject is treated as not found.
